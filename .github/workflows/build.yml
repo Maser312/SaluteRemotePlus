@@ -13,53 +13,61 @@ jobs:
       - name: Checkout Code
         uses: actions/checkout@v4
 
-      - name: Build Standard iOS App
+      - name: Build Dylib and Bundle for LiveContainer
         run: |
           set -e
-          
-          # 1. Создаем минимальный официальный проект Swift Package Manager (iOS App)
-          # Это гарантирует правильные Mach-O заголовки, PkgInfo и совместимость с LiveContainer
-          
           SDK_PATH=$(xcrun --sdk iphoneos --show-sdk-path)
           APP_DIR="Payload/RemoteSalute.app"
+          
+          rm -rf Payload build RemoteSalute.ipa
           mkdir -p "$APP_DIR"
           
-          # Компилируем с флагом динамической линковки системных библиотек
+          # 1. Компилируем основной код как ДИНАМИЧЕСКУЮ БИБЛИОТЕКУ (dylib) для LiveContainer (dlopen)
           swiftc \
             -target arm64-apple-ios16.0 \
             -sdk "$SDK_PATH" \
             -parse-as-library \
-            -emit-executable \
+            -emit-library \
+            -install_name @executable_path/RemoteSalute.dylib \
             -Xlinker -rpath -Xlinker @executable_path/Frameworks \
-            -o "$APP_DIR/RemoteSalute" \
+            -o "$APP_DIR/RemoteSalute.dylib" \
             RemoteSalute/RemoteSaluteApp.swift \
             RemoteSalute/ContentView.swift \
             RemoteSalute/NetworkManager.swift
-          
-          # Копируем Info.plist
-          cp RemoteSalute/Info.plist "$APP_DIR/Info.plist"
-          
-          # Создаем системные файлы структуры iOS Bundle
-          echo "APPL????" > "$APP_DIR/PkgInfo"
-          chmod +x "$APP_DIR/RemoteSalute"
-          
-          # LiveContainer требует валидный Ad-Hoc codesign с entitlements
-          cat <<EOF > entitlements.plist
-          <?xml version="1.0" encoding="UTF-8"?>
-          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-          <plist version="1.0">
-          <dict>
-              <key>get-task-allow</key>
-              <true/>
-          </dict>
-          </plist>
+
+          # 2. Создаем Mach-O исполняемую заглушку (LiveContainer перехватит вызов и загрузит dylib)
+          cat << 'EOF' > stub.c
+          #include <dlfcn.h>
+          #include <stdio.h>
+
+          int main(int argc, char *argv[]) {
+              void *handle = dlopen("@executable_path/RemoteSalute.dylib", RTLD_NOW);
+              if (!handle) {
+                  printf("Failed to load dylib: %s\n", dlerror());
+                  return 1;
+              }
+              return 0;
+          }
           EOF
+
+          clang -isysroot "$SDK_PATH" -target arm64-apple-ios16.0 stub.c -o "$APP_DIR/RemoteSalute"
+          rm stub.c
+
+          # 3. Копируем Info.plist и создаем системный PkgInfo
+          cp RemoteSalute/Info.plist "$APP_DIR/Info.plist"
+          echo "APPL????" > "$APP_DIR/PkgInfo"
           
-          codesign --force --deep --sign - --entitlements entitlements.plist "$APP_DIR"
-          
-          # Упаковка IPA (Payload в корне архива без лишних вложенностей)
-          zip -r -y RemoteSalute.ipa Payload/
-          rm -rf Payload entitlements.plist
+          # 4. Выставляем права на исполнение
+          chmod 755 "$APP_DIR/RemoteSalute"
+          chmod 755 "$APP_DIR/RemoteSalute.dylib"
+
+          # 5. Ad-Hoc подпись бандла и библиотеки
+          codesign --force --sign - "$APP_DIR/RemoteSalute.dylib"
+          codesign --force --sign - "$APP_DIR"
+
+          # 6. Упаковка IPA
+          zip -qry RemoteSalute.ipa Payload/
+          rm -rf Payload
 
       - name: Upload IPA Artifact
         uses: actions/upload-artifact@v4
