@@ -3,10 +3,7 @@ import Network
 import CommonCrypto
 
 /// UDP transport for the TV Gamepad service returned by LibSberCast.
-///
-/// Protocol recovered from Salute companion 26.08.1.18263:
-///   protobuf Gamepad -> AES-128-CBC/PKCS7 -> 4-byte order prefix -> 4-byte length prefix
-/// The order counter is outside AES and advances by 2 on a pressed event; release reuses it.
+/// Protocol recovered from the Salute companion: protobuf Gamepad -> AES-128-CBC/PKCS7 -> order -> length.
 final class GamepadWire {
     static let shared = GamepadWire()
 
@@ -22,6 +19,7 @@ final class GamepadWire {
     private var endpointIndex = 0
     private var currentPort: UInt16 = 0
     private var reconnectWorkItem: DispatchWorkItem?
+    private var sendInFlight = false
 
     private init() {}
 
@@ -48,6 +46,7 @@ final class GamepadWire {
         connection?.cancel()
         connection = nil
         ready = false
+        sendInFlight = false
         sessionID = session.sessionId
         order = 0
         key = decodeKey(session.aesKey)
@@ -64,6 +63,7 @@ final class GamepadWire {
 
     private func openNextEndpoint() {
         guard endpointIndex < endpointCandidates.count, currentPort > 0 else {
+            endpointIndex = 0
             scheduleReconnect()
             return
         }
@@ -78,18 +78,25 @@ final class GamepadWire {
         c.stateUpdateHandler = { [weak self, weak c] state in
             guard let self else { return }
             self.queue.async {
+                guard self.connection === c else { return }
                 switch state {
                 case .ready:
-                    guard self.connection === c else { return }
                     self.ready = true
+                    self.sendInFlight = false
                     self.flushIfReady()
 
-                case .failed, .cancelled:
-                    guard self.connection === c else { return }
+                case .failed(let error):
                     self.ready = false
                     self.connection = nil
+                    self.sendInFlight = false
                     self.endpointIndex += 1
+                    _ = error
                     self.openNextEndpoint()
+
+                case .cancelled:
+                    self.ready = false
+                    self.connection = nil
+                    self.sendInFlight = false
 
                 default:
                     break
@@ -102,70 +109,67 @@ final class GamepadWire {
     }
 
     private func scheduleReconnect() {
-        guard !pending.isEmpty else { return }
         reconnectWorkItem?.cancel()
         let work = DispatchWorkItem { [weak self] in
             guard let self else { return }
             self.queue.async {
-                guard !self.endpointCandidates.isEmpty else { return }
+                guard self.connection == nil, !self.endpointCandidates.isEmpty else { return }
                 self.endpointIndex = 0
                 self.openNextEndpoint()
             }
         }
         reconnectWorkItem = work
-        queue.asyncAfter(deadline: .now() + 0.35, execute: work)
+        queue.asyncAfter(deadline: .now() + 0.5, execute: work)
     }
 
     private func flushIfReady() {
-        guard ready, connection != nil else { return }
-        while !pending.isEmpty {
-            let item = pending.removeFirst()
-            sendButton(code: item.0, pressed: item.1)
-        }
+        guard ready, connection != nil, !sendInFlight, !pending.isEmpty else { return }
+        let item = pending.removeFirst()
+        sendButton(code: item.0, pressed: item.1)
     }
 
     private func sendButton(code: Int, pressed: Bool) {
-        guard let connection, let key, let iv else { return }
+        guard let connection, let key, let iv else {
+            return
+        }
 
-        // Android OrderEncoder increments the order by 2 for a pressed event.
-        // The following release event keeps the same order value.
         if pressed {
             order &+= 2
         }
 
-        // Message.Gamepad {
-        //   Button button = 1;
-        // }
-        // Button {
-        //   int32 code = 1;
-        //   bool pressed = 2;
-        // }
         let button = protobufButton(code: code, pressed: pressed)
         let gamepad = protobufField(number: 1, wireType: 2, payload: button)
-
-        // Android AesEncoder encrypts ONLY the protobuf bytes.
-        // OrderEncoder then puts the 4-byte order in front of the ciphertext.
-        guard let encrypted = aesCBCEncrypt(gamepad, key: key, iv: iv) else { return }
+        guard let encrypted = aesCBCEncrypt(gamepad, key: key, iv: iv) else {
+            pending.insert((code, pressed), at: 0)
+            return
+        }
 
         var payload = Data()
         payload.append(contentsOf: uint32BE(order))
         payload.append(encrypted)
 
-        // Netty LengthFieldPrepender(4) is the last outbound framing stage:
-        // the length is the size of the complete order+ciphertext payload.
         var packet = Data()
         packet.append(contentsOf: uint32BE(UInt32(payload.count)))
         packet.append(payload)
 
+        sendInFlight = true
         connection.send(content: packet, completion: .contentProcessed { [weak self] error in
-            guard let self, let error else { return }
+            guard let self else { return }
             self.queue.async {
-                self.ready = false
-                self.connection?.cancel()
-                self.connection = nil
-                self.pending.insert((code, pressed), at: 0)
-                self.endpointIndex = min(self.endpointIndex + 1, self.endpointCandidates.count)
-                self.openNextEndpoint()
+                self.sendInFlight = false
+                if error != nil {
+                    // Requeue the exact event. Undo the order increment for a failed press
+                    // so a retransmission uses the same sequence number.
+                    if pressed { self.order &-= 2 }
+                    self.pending.insert((code, pressed), at: 0)
+                    self.ready = false
+                    self.connection?.cancel()
+                    self.connection = nil
+                    self.endpointIndex = min(self.endpointIndex + 1, self.endpointCandidates.count)
+                    self.openNextEndpoint()
+                } else {
+                    self.flushIfReady()
+                }
             }
         })
     }
