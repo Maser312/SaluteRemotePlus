@@ -29,12 +29,14 @@ final class RemoteEngine: NSObject, ObservableObject, CBCentralManagerDelegate, 
         case down = 20
         case left = 21
         case right = 22
-        case select = 23
+        case select = 23    // DPAD_CENTER / OK
         case back = 4
         case home = 3
         case power = 26
         case volumeUp = 24
         case volumeDown = 25
+        case enter = 66     // ENTER / Поиск
+        case backspace = 67 // Удалить символ
     }
     
     override init() {
@@ -43,7 +45,7 @@ final class RemoteEngine: NSObject, ObservableObject, CBCentralManagerDelegate, 
         centralManager = CBCentralManager(delegate: self, queue: nil)
     }
     
-    // MARK: - Автопоиск по Wi-Fi (Bonjour / mDNS)
+    // MARK: - Автопоиск по Wi-Fi
     func startWifiDiscovery() {
         let descriptor = NWBrowser.Descriptor.bonjour(type: "_androidtvremote2._tcp", domain: nil)
         let parameters = NWParameters()
@@ -74,7 +76,6 @@ final class RemoteEngine: NSObject, ObservableObject, CBCentralManagerDelegate, 
     // MARK: - Bluetooth Scanning
     func centralManagerDidUpdateState(_ central: CBCentralManager) {
         if central.state == .poweredOn {
-            // Ищем любые устройства, транслирующие себя вокруг
             centralManager?.scanForPeripherals(withServices: nil, options: [CBCentralManagerScanOptionAllowDuplicatesKey: false])
         }
     }
@@ -83,7 +84,6 @@ final class RemoteEngine: NSObject, ObservableObject, CBCentralManagerDelegate, 
         let name = peripheral.name ?? advertisementData[CBAdvertisementDataLocalNameKey] as? String
         guard let deviceName = name, !deviceName.isEmpty else { return }
         
-        // Фильтруем ТВ, приставки SberBox или Салют
         let lower = deviceName.lowercased()
         if lower.contains("sber") || lower.contains("salute") || lower.contains("tv") || lower.contains("box") {
             let btDevice = DiscoveredDevice(
@@ -101,17 +101,15 @@ final class RemoteEngine: NSObject, ObservableObject, CBCentralManagerDelegate, 
         }
     }
     
-    // MARK: - Подключение к выбранному ТВ
+    // MARK: - Подключение
     func connectTo(device: DiscoveredDevice) {
         self.selectedDevice = device
         self.statusMessage = "Подключение к \(device.name)..."
         
         if let peripheral = device.peripheral {
-            // Подключение по BT
             targetPeripheral = peripheral
             centralManager?.connect(peripheral, options: nil)
         } else {
-            // Подключение по Wi-Fi (автоматический резолв эндпоинта)
             let endpoint = NWEndpoint.service(name: device.id, type: "_androidtvremote2._tcp", domain: "local", interface: nil)
             let params = NWParameters.tcp
             connection = NWConnection(to: endpoint, using: params)
@@ -140,12 +138,25 @@ final class RemoteEngine: NSObject, ObservableObject, CBCentralManagerDelegate, 
         }
     }
     
-    // MARK: - Отправка команд
+    // MARK: - Отправка нажатий кнопок
     func send(cmd: Command) {
         guard isConnected else { return }
         let payload = "input keyevent \(cmd.rawValue)\n"
-        guard let data = payload.data(using: .utf8) else { return }
+        sendRaw(payload)
+    }
+    
+    // MARK: - Прямой ввод текста с клавиатуры телефона
+    func sendText(_ text: String) {
+        guard isConnected, !text.isEmpty else { return }
         
+        // Экранируем пробелы и спецсимволы для Android shell
+        let formattedText = text.replacingOccurrences(of: " ", with: "%s")
+        let payload = "input text \"\(formattedText)\"\n"
+        sendRaw(payload)
+    }
+    
+    private func sendRaw(_ string: String) {
+        guard let data = string.data(using: .utf8) else { return }
         connection?.send(content: data, completion: .contentProcessed { error in
             if let error = error {
                 print("Send error: \(error)")
