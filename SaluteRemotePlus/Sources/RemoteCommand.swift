@@ -11,8 +11,12 @@ enum RemoteCommand: String, CaseIterable, Identifiable {
     case back = "BACK"
     case home = "HOME"
     case search = "SEARCH"
+    case source = "SOURCE"
     case volumeUp = "VOLUME_UP"
     case volumeDown = "VOLUME_DOWN"
+    case channelUp = "CHANNEL_UP"
+    case channelDown = "CHANNEL_DOWN"
+    case playPause = "PLAY_PAUSE"
 
     var id: String { rawValue }
 
@@ -28,8 +32,12 @@ enum RemoteCommand: String, CaseIterable, Identifiable {
         case .back: return 4
         case .home: return 3
         case .search: return 84
+        case .source: return 178
         case .volumeUp: return 24
         case .volumeDown: return 25
+        case .channelUp: return 166
+        case .channelDown: return 167
+        case .playPause: return 85
         }
     }
 }
