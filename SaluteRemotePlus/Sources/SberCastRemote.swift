@@ -1,5 +1,5 @@
 import Foundation
-import JazzSDK
+import LibSberCast
 
 @MainActor
 final class SberCastRemote: NSObject, ObservableObject, SberCastListener {
@@ -18,10 +18,6 @@ final class SberCastRemote: NSObject, ObservableObject, SberCastListener {
         self.cast = SberCastFactory.makeSberCast(clientName: "SaluteRemotePlus")
         super.init()
         cast.addListener(listener: self)
-        var settings = cast.getSettings()
-        settings.connectionMediums.wifiMdns = true
-        settings.connectionMediums.ble = false
-        _ = cast.setSettings(sberCastSettings: settings)
         cast.setClientName(name: "SaluteRemotePlus")
         cast.setClientId(name: "saluteremoteplus")
     }
@@ -78,11 +74,7 @@ final class SberCastRemote: NSObject, ObservableObject, SberCastListener {
 
     func onDevicesChanged(_ devices: [SberCastDevice]) {
         self.devices = devices
-        if devices.isEmpty {
-            status = "Телевизор не найден"
-        } else {
-            status = "Выберите телевизор"
-        }
+        status = devices.isEmpty ? "Телевизор не найден" : "Выберите телевизор"
     }
 
     func onCastMessageResponse(message: CastMessage) {}
@@ -121,7 +113,7 @@ final class SberCastRemote: NSObject, ObservableObject, SberCastListener {
             activeDeviceID = deviceId
             session = GamepadSession(
                 sessionId: sessionId,
-                port: port,
+                port: UInt(port),
                 serviceVersion: serviceVersion,
                 aesKey: aesKey,
                 ipv4: Array(ipV4List)
