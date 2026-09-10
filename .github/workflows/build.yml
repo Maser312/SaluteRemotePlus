@@ -21,7 +21,7 @@ jobs:
           rm -rf Payload RemoteSalute.app RemoteSalute.ipa
           mkdir -p Payload/RemoteSalute.app
           
-          # 1. Чистая компиляция под процессор iPhone (ARM64)
+          # 1. Компиляция бинарника под arm64
           swiftc \
             -target arm64-apple-ios16.0 \
             -sdk "$SDK_PATH" \
@@ -32,12 +32,58 @@ jobs:
             RemoteSalute/ContentView.swift \
             RemoteSalute/NetworkManager.swift
 
-          # 2. Копируем Info.plist и создаем PkgInfo
-          cp RemoteSalute/Info.plist Payload/RemoteSalute.app/Info.plist
+          # 2. Формируем валидный Info.plist со всеми ключами для ldid
+          cat << 'EOF' > Payload/RemoteSalute.app/Info.plist
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+              <key>CFBundleDevelopmentRegion</key>
+              <string>en</string>
+              <key>CFBundleExecutable</key>
+              <string>RemoteSalute</string>
+              <key>CFBundleIdentifier</key>
+              <string>com.local.remotesalute</string>
+              <key>CFBundleInfoDictionaryVersion</key>
+              <string>6.0</string>
+              <key>CFBundleName</key>
+              <string>RemoteSalute</string>
+              <key>CFBundlePackageType</key>
+              <string>APPL</string>
+              <key>CFBundleShortVersionString</key>
+              <string>1.0</string>
+              <key>CFBundleVersion</key>
+              <string>1</string>
+              <key>LSRequiresIPhoneOS</key>
+              <true/>
+              <key>MinimumOSVersion</key>
+              <string>16.0</string>
+              <key>DTPlatformName</key>
+              <string>iphoneos</string>
+              <key>DTSDKName</key>
+              <string>iphoneos</string>
+              <key>UILaunchScreen</key>
+              <dict/>
+              <key>UISupportedInterfaceOrientations</key>
+              <array>
+                  <string>UIInterfaceOrientationPortrait</string>
+              </array>
+              <key>NSLocalNetworkUsageDescription</key>
+              <string>Автопоиск телевизора Салют ТВ в локальной сети</string>
+              <key>NSBluetoothAlwaysUsageDescription</key>
+              <string>Подключение к телевизору Салют ТВ по Bluetooth</string>
+          </dict>
+          </plist>
+          EOF
+
+          # 3. Конвертируем Info.plist в бинарный формат Apple (спасает ldid от ошибки node != NULL)
+          plutil -convert binary1 Payload/RemoteSalute.app/Info.plist
+
+          # 4. Создаем PkgInfo и даем права на запуск
           printf "APPL????" > Payload/RemoteSalute.app/PkgInfo
           chmod +x Payload/RemoteSalute.app/RemoteSalute
 
-          # 3. Упаковка в стандартный IPA для SideStore
+          # 5. Упаковка в IPA
           zip -r -y RemoteSalute.ipa Payload
           rm -rf Payload
 
