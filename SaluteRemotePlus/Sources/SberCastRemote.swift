@@ -15,6 +15,10 @@ final class SberCastRemote: NSObject, ObservableObject, LibSberCast.SberCastList
     private let cast: any LibSberCast.SberCast
     private var activeDeviceID: String?
     private var permissionBrowser: NWBrowser?
+    private var autoConnectAttempted = false
+
+    private let savedDeviceIDKey = "SaluteRemotePlus.savedDeviceID"
+    private let savedDeviceNameKey = "SaluteRemotePlus.savedDeviceName"
 
     override init() {
         self.cast = LibSberCast.SberCastFactory.makeSberCast(clientName: "SaluteRemotePlus")
@@ -26,11 +30,9 @@ final class SberCastRemote: NSObject, ObservableObject, LibSberCast.SberCastList
 
     func start() {
         error = nil
-        status = "Запрашиваем доступ к локальной сети…"
+        autoConnectAttempted = false
+        status = "Подключаемся к локальной сети…"
 
-        // Force iOS to perform the Local Network/Bonjour authorization before
-        // Jazz starts its own NSNetServiceBrowser. This avoids the -72008
-        // missing-configuration/policy failure on recent iOS versions.
         let browser = NWBrowser(
             for: .bonjour(type: "_staros._tcp", domain: "local."),
             using: .tcp
@@ -68,14 +70,40 @@ final class SberCastRemote: NSObject, ObservableObject, LibSberCast.SberCastList
         status = "Остановлено"
     }
 
-    func connect(_ device: LibSberCast.SberCastDevice) {
+    func connect(_ device: LibSberCast.SberCastDevice, save: Bool = true) {
         activeDeviceID = device.id
         connectedDevice = device
         needsPin = false
+        pin = ""
         error = nil
+
+        if save {
+            UserDefaults.standard.set(device.id, forKey: savedDeviceIDKey)
+            UserDefaults.standard.set(device.name, forKey: savedDeviceNameKey)
+        }
+
         status = "Подключаемся к \(device.name)…"
         let token = cast.accessTokenForDevice(device.id)
         _ = cast.connectToDevice(deviceId: device.id, accessToken: token)
+    }
+
+    func reconnectSavedDeviceIfPossible() {
+        guard !autoConnectAttempted,
+              let savedID = UserDefaults.standard.string(forKey: savedDeviceIDKey),
+              let device = devices.first(where: { $0.id == savedID }) else { return }
+
+        autoConnectAttempted = true
+        connect(device, save: false)
+    }
+
+    func forgetSavedDevice() {
+        UserDefaults.standard.removeObject(forKey: savedDeviceIDKey)
+        UserDefaults.standard.removeObject(forKey: savedDeviceNameKey)
+        session = nil
+        connectedDevice = nil
+        activeDeviceID = nil
+        needsPin = false
+        status = "Телевизор отвязан"
     }
 
     func confirmPIN() {
@@ -87,7 +115,7 @@ final class SberCastRemote: NSObject, ObservableObject, LibSberCast.SberCastList
     private func requestGamepadSession() {
         guard let id = activeDeviceID else { return }
         let sid = UUID().uuidString
-        status = "Получаем канал пульта…"
+        status = "Запускаем канал пульта…"
         _ = cast.sendRequest(
             deviceId: id,
             request: LibSberCast.CastRequest(type: .getGamepadSessionCastRequest(sessionId: sid))
@@ -104,15 +132,30 @@ final class SberCastRemote: NSObject, ObservableObject, LibSberCast.SberCastList
 
     func onError(error: LibSberCast.CastError) {
         self.error = error.msg
-        self.status = "Ошибка"
+        self.status = "Ошибка подключения"
     }
 
     func onDevicesChanged(_ devices: [LibSberCast.SberCastDevice]) {
         self.devices = devices
-        status = devices.isEmpty ? "Телевизор не найден" : "Выберите телевизор"
+        if devices.isEmpty {
+            status = "Телевизор не найден"
+            return
+        }
+
+        if !autoConnectAttempted {
+            reconnectSavedDeviceIfPossible()
+        }
+
+        if connectedDevice == nil {
+            status = "Выберите телевизор"
+        }
     }
 
-    func onCastMessageResponse(message: LibSberCast.CastMessage) {}
+    func onCastMessageResponse(message: LibSberCast.CastMessage) {
+        if message.code != .success {
+            error = message.description
+        }
+    }
 
     func onCastRequestResponse(response: LibSberCast.CastRequestResponse) {
         switch response.type {
@@ -126,7 +169,7 @@ final class SberCastRemote: NSObject, ObservableObject, LibSberCast.SberCastList
                 needsPin = false
                 requestGamepadSession()
             default:
-                self.error = "Не удалось авторизовать пульт"
+                self.error = "Телевизор отклонил подключение"
             }
 
         case .pinConnectConfirmationCastResponse(let deviceId, let status, let token):
@@ -135,6 +178,7 @@ final class SberCastRemote: NSObject, ObservableObject, LibSberCast.SberCastList
             case .authorized:
                 cast.setAccessTokenForDevice(deviceId, accessToken: token)
                 needsPin = false
+                pin = ""
                 requestGamepadSession()
             default:
                 error = "Неверный код или подключение запрещено"
@@ -142,9 +186,11 @@ final class SberCastRemote: NSObject, ObservableObject, LibSberCast.SberCastList
 
         case .gamepadSessionConnectionInfoCastResponse(let deviceId, let status, let sessionId, let port, let serviceVersion, let aesKey, let ipV4List):
             guard status == .success else {
+                session = nil
                 error = "Телевизор не предоставил канал пульта"
                 return
             }
+
             activeDeviceID = deviceId
             session = GamepadSession(
                 sessionId: sessionId,
