@@ -8,16 +8,52 @@ workflows:
         script: brew install xcodegen
       - name: Generate project
         script: xcodegen generate --spec project.yml
-      - name: Build unsigned IPA
+      - name: Build and package unsigned IPA
         script: |
           set -euo pipefail
           rm -rf build Payload SaluteRemotePlus.ipa
-          xcodebuild -project SaluteRemotePlus.xcodeproj -scheme SaluteRemotePlus -configuration Release -sdk iphoneos -derivedDataPath build/DerivedData CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" build
+
+          xcodebuild \
+            -project SaluteRemotePlus.xcodeproj \
+            -scheme SaluteRemotePlus \
+            -configuration Release \
+            -sdk iphoneos \
+            -derivedDataPath build/DerivedData \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            AD_HOC_CODE_SIGNING_ALLOWED=NO \
+            build
+
           APP_PATH="$(find build/DerivedData/Build/Products -maxdepth 2 -name 'SaluteRemotePlus.app' -type d -print -quit)"
           test -n "$APP_PATH"
+          test -f "$APP_PATH/Info.plist"
+          test -x "$APP_PATH/SaluteRemotePlus"
+
+          SPENCH_PATH="$(find build/DerivedData -type d -path '*/Spench.xcframework/ios-arm64/Spench.framework' -print -quit)"
+          test -n "$SPENCH_PATH"
+          mkdir -p "$APP_PATH/Frameworks"
+          rm -rf "$APP_PATH/Frameworks/Spench.framework"
+          ditto "$SPENCH_PATH" "$APP_PATH/Frameworks/Spench.framework"
+
+          # SideStore performs the final signing. Remove all existing signatures
+          # and macOS extended attributes before creating the IPA.
+          find "$APP_PATH" -name _CodeSignature -type d -prune -exec rm -rf {} +
+          xattr -cr "$APP_PATH" || true
+
+          /usr/libexec/PlistBuddy -c "Print :CFBundleIdentifier" "$APP_PATH/Info.plist" | grep -Fx 'com.andrey.saluteremoteplus'
+          /usr/libexec/PlistBuddy -c "Print :CFBundleExecutable" "$APP_PATH/Info.plist" | grep -Fx 'SaluteRemotePlus'
+          /usr/libexec/PlistBuddy -c "Print :CFBundlePackageType" "$APP_PATH/Info.plist" | grep -Fx 'APPL'
+          test -f "$APP_PATH/Frameworks/Spench.framework/Info.plist"
+          test -f "$APP_PATH/Frameworks/Spench.framework/Spench"
+
           mkdir -p Payload
-          cp -R "$APP_PATH" Payload/SaluteRemotePlus.app
-          rm -rf Payload/SaluteRemotePlus.app/_CodeSignature
-          zip -qry SaluteRemotePlus.ipa Payload
+          ditto "$APP_PATH" Payload/SaluteRemotePlus.app
+          ditto -c -k --sequesterRsrc --keepParent Payload SaluteRemotePlus.ipa
+
+          test -s SaluteRemotePlus.ipa
+          unzip -Z1 SaluteRemotePlus.ipa | grep -Fx 'Payload/SaluteRemotePlus.app/Info.plist'
+          unzip -Z1 SaluteRemotePlus.ipa | grep -Fx 'Payload/SaluteRemotePlus.app/SaluteRemotePlus'
+          unzip -Z1 SaluteRemotePlus.ipa | grep -Fx 'Payload/SaluteRemotePlus.app/Frameworks/Spench.framework/Spench'
     artifacts:
       - SaluteRemotePlus.ipa
