@@ -11,20 +11,26 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
       - name: Select Xcode
         uses: maxim-lobanov/setup-xcode@v1
         with:
           xcode-version: latest-stable
+
       - name: Install XcodeGen
         run: brew install xcodegen
+
       - name: Generate Xcode project
         run: xcodegen generate --spec project.yml
+
       - name: Resolve Swift packages
         run: xcodebuild -resolvePackageDependencies -project SaluteRemotePlus.xcodeproj -scheme SaluteRemotePlus
+
       - name: Build unsigned app
         run: |
           set -euo pipefail
           rm -rf build Payload SaluteRemotePlus.ipa
+
           xcodebuild \
             -project SaluteRemotePlus.xcodeproj \
             -scheme SaluteRemotePlus \
@@ -36,25 +42,49 @@ jobs:
             CODE_SIGN_IDENTITY="" \
             AD_HOC_CODE_SIGNING_ALLOWED=NO \
             build
+
           APP_PATH="$(find build/DerivedData/Build/Products -maxdepth 2 -name 'SaluteRemotePlus.app' -type d -print -quit)"
           test -n "$APP_PATH"
+          test -f "$APP_PATH/Info.plist"
+          test -x "$APP_PATH/SaluteRemotePlus"
 
           # JazzSDK.framework has a runtime dependency on Spench.framework,
-          # but the upstream SPM package does not declare Spench as a product.
-          # Copy the device slice into the app's Frameworks directory so
-          # dyld can resolve @rpath/Spench.framework/Spench after SideStore signing.
+          # while the upstream SPM package does not expose Spench as a product.
           SPENCH_PATH="$(find build/DerivedData -type d -path '*/Spench.xcframework/ios-arm64/Spench.framework' -print -quit)"
           test -n "$SPENCH_PATH"
           mkdir -p "$APP_PATH/Frameworks"
           rm -rf "$APP_PATH/Frameworks/Spench.framework"
-          cp -R "$SPENCH_PATH" "$APP_PATH/Frameworks/Spench.framework"
+          ditto "$SPENCH_PATH" "$APP_PATH/Frameworks/Spench.framework"
 
+          # This IPA is intentionally unsigned: SideStore signs the app and all
+          # embedded frameworks with the user's provisioning profile.
+          find "$APP_PATH" -name _CodeSignature -type d -prune -exec rm -rf {} +
+
+          # Remove extended attributes that can survive a macOS build and make
+          # the archive needlessly fragile when imported by SideStore.
+          xattr -cr "$APP_PATH" || true
+
+          # Verify the important bundle metadata before archiving.
+          /usr/libexec/PlistBuddy -c "Print :CFBundleIdentifier" "$APP_PATH/Info.plist" | grep -Fx 'com.andrey.saluteremoteplus'
+          /usr/libexec/PlistBuddy -c "Print :CFBundleExecutable" "$APP_PATH/Info.plist" | grep -Fx 'SaluteRemotePlus'
+          /usr/libexec/PlistBuddy -c "Print :CFBundlePackageType" "$APP_PATH/Info.plist" | grep -Fx 'APPL'
+          test -f "$APP_PATH/Frameworks/Spench.framework/Info.plist"
+          test -f "$APP_PATH/Frameworks/Spench.framework/Spench"
+
+          rm -rf Payload
           mkdir -p Payload
-          cp -R "$APP_PATH" Payload/SaluteRemotePlus.app
-          rm -rf Payload/SaluteRemotePlus.app/_CodeSignature
-          rm -rf Payload/SaluteRemotePlus.app/Frameworks/Spench.framework/_CodeSignature
-          zip -qry SaluteRemotePlus.ipa Payload
+          ditto "$APP_PATH" Payload/SaluteRemotePlus.app
+
+          # Create a normal IPA with Payload as the archive root. ditto avoids
+          # the macOS zip metadata/symlink edge cases seen with ad-hoc cp/zip.
+          ditto -c -k --sequesterRsrc --keepParent Payload SaluteRemotePlus.ipa
           test -s SaluteRemotePlus.ipa
+
+          # Final archive sanity check: exactly one app at Payload root.
+          unzip -Z1 SaluteRemotePlus.ipa | grep -Fx 'Payload/SaluteRemotePlus.app/Info.plist'
+          unzip -Z1 SaluteRemotePlus.ipa | grep -Fx 'Payload/SaluteRemotePlus.app/SaluteRemotePlus'
+          unzip -Z1 SaluteRemotePlus.ipa | grep -Fx 'Payload/SaluteRemotePlus.app/Frameworks/Spench.framework/Spench'
+
       - name: Upload IPA
         uses: actions/upload-artifact@v4
         with:
