@@ -17,7 +17,7 @@ jobs:
         run: brew install xcodegen
 
       - name: Generate Xcode Project
-        run: xcodegen generate
+        run: xcodegen generate --spec project.yml
 
       - name: Build App
         run: |
@@ -27,8 +27,8 @@ jobs:
             -sdk iphoneos \
             -configuration Release \
             -derivedDataPath build/ \
-            CODE_SIGNING_ALLOWED="NO" \
-            CODE_SIGNING_REQUIRED="NO" \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
             CODE_SIGN_IDENTITY="" \
             build
 
