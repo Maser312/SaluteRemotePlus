@@ -1,6 +1,7 @@
 name: RemoteSalute
 options:
   bundleIdPrefix: com.local
+  xcodeVersion: "15.4"
 targets:
   RemoteSalute:
     type: application
