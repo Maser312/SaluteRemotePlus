@@ -13,29 +13,30 @@ jobs:
       - name: Checkout Code
         uses: actions/checkout@v4
 
-      - name: Install XcodeGen
-        run: brew install xcodegen
-
-      - name: Generate Xcode Project (Xcode 15 Compatible)
-        run: xcodegen generate --project-version 14.0
-
-      - name: Build App
+      - name: Compile and Package IPA
         run: |
-          xcodebuild \
-            -project RemoteSalute.xcodeproj \
-            -scheme RemoteSalute \
-            -sdk iphoneos \
-            -configuration Release \
-            -derivedDataPath build/ \
-            CODE_SIGNING_ALLOWED=NO \
-            CODE_SIGNING_REQUIRED=NO \
-            CODE_SIGN_IDENTITY="" \
-            build
-
-      - name: Package to IPA
-        run: |
+          set -e
+          SDK_PATH=$(xcrun --sdk iphoneos --show-sdk-path)
+          
+          mkdir -p build/RemoteSalute.app
+          
+          # Компиляция Swift без Xcode-проекта напрямую под ARM64 (iPhone)
+          swiftc \
+            -target arm64-apple-ios16.0 \
+            -sdk "$SDK_PATH" \
+            -parse-as-library \
+            -emit-executable \
+            -o build/RemoteSalute.app/RemoteSalute \
+            RemoteSalute/RemoteSaluteApp.swift \
+            RemoteSalute/ContentView.swift \
+            RemoteSalute/NetworkManager.swift
+            
+          # Копируем Info.plist
+          cp RemoteSalute/Info.plist build/RemoteSalute.app/Info.plist
+          
+          # Упаковываем в IPA
           mkdir -p Payload
-          cp -r build/Build/Products/Release-iphoneos/RemoteSalute.app Payload/
+          cp -r build/RemoteSalute.app Payload/
           zip -r RemoteSalute.ipa Payload
           rm -rf Payload
 
