@@ -2,20 +2,20 @@ import Foundation
 import LibSberCast
 
 @MainActor
-final class SberCastRemote: NSObject, ObservableObject, SberCastListener {
-    @Published private(set) var devices: [SberCastDevice] = []
+final class SberCastRemote: NSObject, ObservableObject, LibSberCast.SberCastListener {
+    @Published private(set) var devices: [LibSberCast.SberCastDevice] = []
     @Published private(set) var status = "Запуск…"
-    @Published private(set) var connectedDevice: SberCastDevice?
+    @Published private(set) var connectedDevice: LibSberCast.SberCastDevice?
     @Published private(set) var session: GamepadSession?
     @Published var pin: String = ""
     @Published private(set) var needsPin = false
     @Published private(set) var error: String?
 
-    private let cast: any SberCast
+    private let cast: any LibSberCast.SberCast
     private var activeDeviceID: String?
 
     override init() {
-        self.cast = SberCastFactory.makeSberCast(clientName: "SaluteRemotePlus")
+        self.cast = LibSberCast.SberCastFactory.makeSberCast(clientName: "SaluteRemotePlus")
         super.init()
         cast.addListener(listener: self)
         cast.setClientName(name: "SaluteRemotePlus")
@@ -33,7 +33,7 @@ final class SberCastRemote: NSObject, ObservableObject, SberCastListener {
         status = "Остановлено"
     }
 
-    func connect(_ device: SberCastDevice) {
+    func connect(_ device: LibSberCast.SberCastDevice) {
         activeDeviceID = device.id
         connectedDevice = device
         needsPin = false
@@ -55,11 +55,11 @@ final class SberCastRemote: NSObject, ObservableObject, SberCastListener {
         status = "Получаем канал пульта…"
         _ = cast.sendRequest(
             deviceId: id,
-            request: CastRequest(type: .getGamepadSessionCastRequest(sessionId: sid))
+            request: LibSberCast.CastRequest(type: .getGamepadSessionCastRequest(sessionId: sid))
         )
     }
 
-    func onStatusChanged(status: CastStatus) {
+    func onStatusChanged(status: LibSberCast.CastStatus) {
         switch status.state {
         case .stopped: self.status = "Остановлено"
         case .starting: self.status = "Запускаем обнаружение…"
@@ -67,19 +67,19 @@ final class SberCastRemote: NSObject, ObservableObject, SberCastListener {
         }
     }
 
-    func onError(error: CastError) {
+    func onError(error: LibSberCast.CastError) {
         self.error = error.msg
         self.status = "Ошибка"
     }
 
-    func onDevicesChanged(_ devices: [SberCastDevice]) {
+    func onDevicesChanged(_ devices: [LibSberCast.SberCastDevice]) {
         self.devices = devices
         status = devices.isEmpty ? "Телевизор не найден" : "Выберите телевизор"
     }
 
-    func onCastMessageResponse(message: CastMessage) {}
+    func onCastMessageResponse(message: LibSberCast.CastMessage) {}
 
-    func onCastRequestResponse(response: CastRequestResponse) {
+    func onCastRequestResponse(response: LibSberCast.CastRequestResponse) {
         switch response.type {
         case .pinConnectCastResponse(let deviceId, let status):
             activeDeviceID = deviceId
@@ -113,7 +113,7 @@ final class SberCastRemote: NSObject, ObservableObject, SberCastListener {
             activeDeviceID = deviceId
             session = GamepadSession(
                 sessionId: sessionId,
-                port: UInt(port),
+                port: port,
                 serviceVersion: serviceVersion,
                 aesKey: aesKey,
                 ipv4: Array(ipV4List)
@@ -126,5 +126,5 @@ final class SberCastRemote: NSObject, ObservableObject, SberCastListener {
     }
 
     func onBLEDeeplinkReceived(deeplink: String) {}
-    func onBLEDeeplinkRunInfo(_ info: RunBLEDeeplinkOnDeviceInfo) {}
+    func onBLEDeeplinkRunInfo(_ info: LibSberCast.RunBLEDeeplinkOnDeviceInfo) {}
 }
