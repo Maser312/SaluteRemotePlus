@@ -1,12 +1,9 @@
-name: Build IPA for LiveContainer
+name: Build IPA
 
 on:
   push:
     branches: [ "main", "master" ]
   workflow_dispatch:
-
-permissions:
-  contents: write
 
 jobs:
   build:
@@ -16,106 +13,35 @@ jobs:
       - name: Checkout Code
         uses: actions/checkout@v4
 
-      - name: Compile App via Swift
+      - name: Compile and Package
         run: |
           set -e
           SDK_PATH=$(xcrun --sdk iphoneos --show-sdk-path)
-          APP_DIR="Payload/RemoteSalute.app"
           
-          rm -rf Payload build RemoteSalute.ipa
-          mkdir -p "$APP_DIR"
+          rm -rf Payload RemoteSalute.app RemoteSalute.ipa
+          mkdir -p Payload/RemoteSalute.app
           
-          # Компиляция чистого бинарника под iOS
           swiftc \
             -target arm64-apple-ios16.0 \
             -sdk "$SDK_PATH" \
             -parse-as-library \
             -O \
-            -o "$APP_DIR/RemoteSalute" \
+            -o Payload/RemoteSalute.app/RemoteSalute \
             RemoteSalute/RemoteSaluteApp.swift \
             RemoteSalute/ContentView.swift \
             RemoteSalute/NetworkManager.swift
 
-          # Копируем манифест
-          cp RemoteSalute/Info.plist "$APP_DIR/Info.plist"
-          
-          # Обязательные системные маркеры бандла iOS
-          printf "APPL????" > "$APP_DIR/PkgInfo"
-          chmod 755 "$APP_DIR/RemoteSalute"
+          cp RemoteSalute/Info.plist Payload/RemoteSalute.app/Info.plist
+          printf "APPL????" > Payload/RemoteSalute.app/PkgInfo
+          chmod 755 Payload/RemoteSalute.app/RemoteSalute
 
-          # Ad-hoc подпись всего бандла
-          codesign --force --deep --sign - "$APP_DIR"
+          codesign --force --deep --sign - Payload/RemoteSalute.app
 
-          # Упаковка через нативную утилиту macOS (не ломает дескрипторы для LiveContainer)
-          /usr/bin/ditto -c -k --sequesterRsrc --keepParent Payload RemoteSalute.ipa
+          /usr/bin/zip -r -y RemoteSalute.ipa Payload
           rm -rf Payload
 
-      - name: Release IPA directly
-        uses: softprops/action-gh-release@v2
-        if: startsWith(github.ref, 'refs/tags/') || github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'
+      - name: Upload IPA
+        uses: actions/upload-artifact@v4
         with:
-          tag_name: "latest"
-          name: "RemoteSalute IPA"
-          files: RemoteSalute.ipa
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}name: Build IPA for LiveContainer
-
-on:
-  push:
-    branches: [ "main", "master" ]
-  workflow_dispatch:
-
-permissions:
-  contents: write
-
-jobs:
-  build:
-    runs-on: macos-14
-
-    steps:
-      - name: Checkout Code
-        uses: actions/checkout@v4
-
-      - name: Compile App via Swift
-        run: |
-          set -e
-          SDK_PATH=$(xcrun --sdk iphoneos --show-sdk-path)
-          APP_DIR="Payload/RemoteSalute.app"
-          
-          rm -rf Payload build RemoteSalute.ipa
-          mkdir -p "$APP_DIR"
-          
-          # Компиляция чистого бинарника под iOS
-          swiftc \
-            -target arm64-apple-ios16.0 \
-            -sdk "$SDK_PATH" \
-            -parse-as-library \
-            -O \
-            -o "$APP_DIR/RemoteSalute" \
-            RemoteSalute/RemoteSaluteApp.swift \
-            RemoteSalute/ContentView.swift \
-            RemoteSalute/NetworkManager.swift
-
-          # Копируем манифест
-          cp RemoteSalute/Info.plist "$APP_DIR/Info.plist"
-          
-          # Обязательные системные маркеры бандла iOS
-          printf "APPL????" > "$APP_DIR/PkgInfo"
-          chmod 755 "$APP_DIR/RemoteSalute"
-
-          # Ad-hoc подпись всего бандла
-          codesign --force --deep --sign - "$APP_DIR"
-
-          # Упаковка через нативную утилиту macOS (не ломает дескрипторы для LiveContainer)
-          /usr/bin/ditto -c -k --sequesterRsrc --keepParent Payload RemoteSalute.ipa
-          rm -rf Payload
-
-      - name: Release IPA directly
-        uses: softprops/action-gh-release@v2
-        if: startsWith(github.ref, 'refs/tags/') || github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'
-        with:
-          tag_name: "latest"
-          name: "RemoteSalute IPA"
-          files: RemoteSalute.ipa
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          name: RemoteSalute
+          path: RemoteSalute.ipa
