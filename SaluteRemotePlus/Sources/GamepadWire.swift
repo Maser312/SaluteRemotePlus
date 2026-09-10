@@ -2,8 +2,7 @@ import Foundation
 import Network
 import CommonCrypto
 
-/// Transport for the TV Gamepad service.
-/// The gamepad channel is a UDP session returned by SberCast after pairing.
+/// UDP transport for the TV Gamepad service returned by LibSberCast.
 final class GamepadWire {
     static let shared = GamepadWire()
 
@@ -17,6 +16,8 @@ final class GamepadWire {
     private var pending: [(Int, Bool)] = []
     private var endpointCandidates: [String] = []
     private var endpointIndex = 0
+    private var currentPort: UInt16 = 0
+    private var reconnectWorkItem: DispatchWorkItem?
 
     private init() {}
 
@@ -39,6 +40,7 @@ final class GamepadWire {
             return
         }
 
+        reconnectWorkItem?.cancel()
         connection?.cancel()
         connection = nil
         ready = false
@@ -47,20 +49,25 @@ final class GamepadWire {
         key = decodeKey(session.aesKey)
         iv = uuidBytes(session.sessionId)
         endpointCandidates = session.ipv4
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
         endpointIndex = 0
+        currentPort = UInt16(exactly: session.port) ?? 0
 
-        guard key != nil, iv != nil, !endpointCandidates.isEmpty else { return }
-        openNextEndpoint(port: session.port)
+        guard key != nil, iv != nil, !endpointCandidates.isEmpty, currentPort > 0 else { return }
+        openNextEndpoint()
     }
 
-    private func openNextEndpoint(port: UInt) {
-        guard endpointIndex < endpointCandidates.count,
-              let rawPort = UInt16(exactly: port),
-              let host = endpointCandidates[safe: endpointIndex] else { return }
+    private func openNextEndpoint() {
+        guard endpointIndex < endpointCandidates.count, currentPort > 0 else {
+            scheduleReconnect()
+            return
+        }
 
+        let host = endpointCandidates[endpointIndex]
         let c = NWConnection(
             host: NWEndpoint.Host(host),
-            port: NWEndpoint.Port(rawValue: rawPort)!,
+            port: NWEndpoint.Port(rawValue: currentPort)!,
             using: .udp
         )
 
@@ -69,14 +76,17 @@ final class GamepadWire {
             self.queue.async {
                 switch state {
                 case .ready:
+                    guard self.connection === c else { return }
                     self.ready = true
                     self.flushIfReady()
+
                 case .failed, .cancelled:
                     guard self.connection === c else { return }
                     self.ready = false
                     self.connection = nil
                     self.endpointIndex += 1
-                    self.openNextEndpoint(port: port)
+                    self.openNextEndpoint()
+
                 default:
                     break
                 }
@@ -85,6 +95,21 @@ final class GamepadWire {
 
         connection = c
         c.start(queue: queue)
+    }
+
+    private func scheduleReconnect() {
+        guard !pending.isEmpty else { return }
+        reconnectWorkItem?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            self.queue.async {
+                guard !self.endpointCandidates.isEmpty else { return }
+                self.endpointIndex = 0
+                self.openNextEndpoint()
+            }
+        }
+        reconnectWorkItem = work
+        queue.asyncAfter(deadline: .now() + 0.35, execute: work)
     }
 
     private func flushIfReady() {
@@ -113,11 +138,15 @@ final class GamepadWire {
         packet.append(encrypted)
 
         connection.send(content: packet, completion: .contentProcessed { [weak self] error in
-            if let error {
-                self?.queue.async {
-                    self?.ready = false
-                    self?.connection?.cancel()
-                }
+            guard let self, let error else { return }
+            self.queue.async {
+                self.ready = false
+                self.connection?.cancel()
+                self.connection = nil
+                // Do not lose a button when the first UDP socket dies during startup.
+                self.pending.insert((code, pressed), at: 0)
+                self.endpointIndex = min(self.endpointIndex + 1, self.endpointCandidates.count)
+                self.openNextEndpoint()
             }
         })
     }
@@ -200,12 +229,6 @@ final class GamepadWire {
         guard status == kCCSuccess else { return nil }
         output.count = moved
         return output
-    }
-}
-
-private extension Array {
-    subscript(safe index: Int) -> Element? {
-        indices.contains(index) ? self[index] : nil
     }
 }
 
