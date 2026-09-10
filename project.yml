@@ -1,0 +1,14 @@
+name: RemoteSalute
+options:
+  bundleIdPrefix: com.local
+targets:
+  RemoteSalute:
+    type: application
+    platform: iOS
+    deploymentTarget: "16.0"
+    sources: [RemoteSalute]
+    info:
+      path: RemoteSalute/Info.plist
+    settings:
+      CODE_SIGNING_ALLOWED: NO
+      CODE_SIGNING_REQUIRED: NO
