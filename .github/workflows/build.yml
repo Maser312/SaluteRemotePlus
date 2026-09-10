@@ -5,6 +5,9 @@ on:
     branches: [ "main", "master" ]
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
   build:
     runs-on: macos-14
@@ -13,64 +16,166 @@ jobs:
       - name: Checkout Code
         uses: actions/checkout@v4
 
-      - name: Build Dylib and Bundle for LiveContainer
+      - name: Build Genuine Xcode Project and IPA
         run: |
           set -e
-          SDK_PATH=$(xcrun --sdk iphoneos --show-sdk-path)
-          APP_DIR="Payload/RemoteSalute.app"
           
-          rm -rf Payload build RemoteSalute.ipa
-          mkdir -p "$APP_DIR"
+          # 1. Создаем правильную структуру Xcode проекта с помощью встроенного python
+          python3 -c '
+import os, json
+
+pbx_content = """// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 56;
+	objects = {
+		1A001 /* RemoteSalute */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteSaluteApp.swift; sourceTree = "<group>"; };
+		1A002 /* ContentView */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
+		1A003 /* NetworkManager */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NetworkManager.swift; sourceTree = "<group>"; };
+		1A004 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
+		1A005 /* RemoteSalute.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = RemoteSalute.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		
+		2A001 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				3A001 /* RemoteSaluteApp.swift in Sources */,
+				3A002 /* ContentView.swift in Sources */,
+				3A003 /* NetworkManager.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		3A001 = {isa = PBXBuildFile; fileRef = 1A001; };
+		3A002 = {isa = PBXBuildFile; fileRef = 1A002; };
+		3A003 = {isa = PBXBuildFile; fileRef = 1A003; };
+		
+		4A001 /* Main Group */ = {
+			isa = PBXGroup;
+			children = (
+				1A001,
+				1A002,
+				1A003,
+				1A004,
+				1A005,
+			);
+			sourceTree = "<group>";
+		};
+		
+		5A001 /* RemoteSalute Target */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 6A001;
+			buildPhases = ( 2A001 );
+			buildRules = ( );
+			dependencies = ( );
+			name = RemoteSalute;
+			productName = RemoteSalute;
+			productReference = 1A005;
+			productType = "com.apple.product-type.application";
+		};
+		
+		6A001 /* Build Configuration List */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = ( 7A001 );
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		
+		7A001 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ENABLE_MODULES = YES;
+				CODE_SIGNING_ALLOWED = NO;
+				CODE_SIGNING_REQUIRED = NO;
+				CODE_SIGN_IDENTITY = "";
+				CURRENT_PROJECT_VERSION = 1;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = RemoteSalute/Info.plist;
+				IPHONEOS_DEPLOYMENT_TARGET = 16.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.local.remotesalute;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Release;
+		};
+		
+		8A001 /* Project Object */ = {
+			isa = PBXProject;
+			attributes = { BuildIndependentTargetsInParallel = YES; };
+			buildConfigurationList = 9A001;
+			compatibilityVersion = "Xcode 14.0";
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = ( en, Base );
+			mainGroup = 4A001;
+			productRefGroup = 4A001;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = ( 5A001 );
+		};
+		
+		9A001 = {
+			isa = XCConfigurationList;
+			buildConfigurations = ( 7A001 );
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+	};
+	rootObject = 8A001;
+}
+"""
+os.makedirs("RemoteSalute.xcodeproj", exist_ok=True)
+with open("RemoteSalute.xcodeproj/project.pbxproj", "w") as f:
+    f.write(pbx_content)
+'
+
+          # 2. Сборка стандартным компилятором Xcode
+          xcodebuild clean build \
+            -project RemoteSalute.xcodeproj \
+            -target RemoteSalute \
+            -sdk iphoneos \
+            -configuration Release \
+            -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY=""
+
+          # 3. Правильная компоновка бандла для LiveContainer
+          APP_PATH="build/Build/Products/Release-iphoneos/RemoteSalute.app"
           
-          # 1. Компилируем dylib с правильной передачей флагов линкеру
-          swiftc \
-            -target arm64-apple-ios16.0 \
-            -sdk "$SDK_PATH" \
-            -parse-as-library \
-            -emit-library \
-            -Xlinker -install_name -Xlinker @executable_path/RemoteSalute.dylib \
-            -Xlinker -rpath -Xlinker @executable_path/Frameworks \
-            -o "$APP_DIR/RemoteSalute.dylib" \
-            RemoteSalute/RemoteSaluteApp.swift \
-            RemoteSalute/ContentView.swift \
-            RemoteSalute/NetworkManager.swift
-
-          # 2. Создаем Mach-O заглушку
-          cat << 'EOF' > stub.c
-          #include <dlfcn.h>
-          #include <stdio.h>
-
-          int main(int argc, char *argv[]) {
-              void *handle = dlopen("@executable_path/RemoteSalute.dylib", RTLD_NOW);
-              if (!handle) {
-                  printf("Failed to load dylib: %s\n", dlerror());
-                  return 1;
-              }
-              return 0;
-          }
+          # LiveContainer требует ad-hoc подпись с get-task-allow
+          cat <<EOF > entitlements.plist
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+              <key>get-task-allow</key>
+              <true/>
+          </dict>
+          </plist>
           EOF
-
-          clang -isysroot "$SDK_PATH" -target arm64-apple-ios16.0 stub.c -o "$APP_DIR/RemoteSalute"
-          rm stub.c
-
-          # 3. Копируем Info.plist и PkgInfo
-          cp RemoteSalute/Info.plist "$APP_DIR/Info.plist"
-          echo "APPL????" > "$APP_DIR/PkgInfo"
           
-          # 4. Права доступа
-          chmod 755 "$APP_DIR/RemoteSalute"
-          chmod 755 "$APP_DIR/RemoteSalute.dylib"
+          codesign --force --deep --sign - --entitlements entitlements.plist "$APP_PATH"
+          
+          # Упаковка стандартного Payload
+          mkdir -p Payload
+          cp -R "$APP_PATH" Payload/
+          
+          # Упаковка IPA без сжатия каталогов (-y сохраняет симлинки)
+          zip -qry RemoteSalute.ipa Payload
+          rm -rf Payload entitlements.plist
 
-          # 5. Ad-Hoc подпись
-          codesign --force --sign - "$APP_DIR/RemoteSalute.dylib"
-          codesign --force --sign - "$APP_DIR"
-
-          # 6. Упаковка IPA
-          zip -qry RemoteSalute.ipa Payload/
-          rm -rf Payload
-
-      - name: Upload IPA Artifact
-        uses: actions/upload-artifact@v4
+      # Выкладываем чистый .ipa в Releases (чтобы не было двойного zip от артефактов)
+      - name: Release IPA directly
+        uses: softprops/action-gh-release@v2
+        if: startsWith(github.ref, 'refs/tags/') || github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'
         with:
-          name: RemoteSalute
-          path: RemoteSalute.ipa
+          tag_name: "latest"
+          name: "RemoteSalute IPA"
+          files: RemoteSalute.ipa
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
