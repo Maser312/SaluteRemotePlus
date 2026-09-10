@@ -1,11 +1,10 @@
 import SwiftUI
-import JazzSDK
 
 struct ContentView: View {
     @StateObject private var remote = SberCastRemote()
 
     var body: some View {
-        NavigationStack {
+        NavigationView {
             Group {
                 if remote.session != nil {
                     RemotePadView(remote: remote)
@@ -14,24 +13,24 @@ struct ContentView: View {
                 }
             }
             .navigationTitle("Salute Remote+")
-            .task { remote.start() }
+            .onAppear { remote.start() }
         }
+        .navigationViewStyle(.stack)
     }
 
     private var deviceView: some View {
         VStack(spacing: 18) {
             Text(remote.status).font(.headline)
             if let error = remote.error {
-                Text(error).foregroundStyle(.red).multilineTextAlignment(.center)
+                Text(error)
+                    .foregroundStyle(.red)
+                    .multilineTextAlignment(.center)
             }
             List(remote.devices, id: \.id) { device in
                 Button {
                     remote.connect(device)
                 } label: {
-                    VStack(alignment: .leading) {
-                        Text(device.name).font(.headline)
-                        Text(device.product).font(.caption).foregroundStyle(.secondary)
-                    }
+                    Text(device.name).font(.headline)
                 }
             }
             if remote.needsPin {
