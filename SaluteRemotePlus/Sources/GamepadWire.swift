@@ -85,13 +85,13 @@ final class GamepadWire {
 
     private func uint32BE(_ value: UInt32) -> Data {
         var v = value.bigEndian
-        return Data(bytes: &v, count: MemoryLayout<UInt32>.size)
+        return withUnsafeBytes(of: &v) { Data($0) }
     }
 
     private func uuidBytes(_ value: String) -> Data? {
         guard let uuid = UUID(uuidString: value) else { return nil }
         var raw = uuid.uuid
-        return Data(bytes: &raw, count: 16)
+        return withUnsafeBytes(of: &raw) { Data($0) }
     }
 
     private func decodeKey(_ value: String) -> Data? {
@@ -102,18 +102,35 @@ final class GamepadWire {
     }
 
     private func aesCBCEncrypt(_ data: Data, key: Data, iv: Data) -> Data? {
-        guard iv.count == kCCBlockSizeAES128, [kCCKeySizeAES128, kCCKeySizeAES192, kCCKeySizeAES256].contains(key.count) else { return nil }
-        var output = Data(count: data.count + kCCBlockSizeAES128)
+        guard iv.count == kCCBlockSizeAES128,
+              [kCCKeySizeAES128, kCCKeySizeAES192, kCCKeySizeAES256].contains(key.count) else { return nil }
+
+        let outputCapacity = data.count + kCCBlockSizeAES128
+        var output = Data(count: outputCapacity)
         var moved = 0
+
         let status = output.withUnsafeMutableBytes { outBuf in
             data.withUnsafeBytes { dataBuf in
                 key.withUnsafeBytes { keyBuf in
                     iv.withUnsafeBytes { ivBuf in
-                        CCCrypt(CCOperation(kCCEncrypt), CCAlgorithm(kCCAlgorithmAES), CCOptions(kCCOptionPKCS7Padding), keyBuf.baseAddress, key.count, ivBuf.baseAddress, dataBuf.baseAddress, data.count, outBuf.baseAddress, output.count, &moved)
+                        CCCrypt(
+                            CCOperation(kCCEncrypt),
+                            CCAlgorithm(kCCAlgorithmAES),
+                            CCOptions(kCCOptionPKCS7Padding),
+                            keyBuf.baseAddress,
+                            key.count,
+                            ivBuf.baseAddress,
+                            dataBuf.baseAddress,
+                            data.count,
+                            outBuf.baseAddress,
+                            outputCapacity,
+                            &moved
+                        )
                     }
                 }
             }
         }
+
         guard status == kCCSuccess else { return nil }
         output.count = moved
         return output
