@@ -3,10 +3,12 @@ import SwiftUI
 struct ContentView: View {
     @StateObject private var engine = RemoteEngine()
     @State private var showDevicePicker = false
+    @State private var showKeyboardSheet = false
+    @State private var inputText: String = ""
     
     var body: some View {
         VStack(spacing: 20) {
-            // Шапка со статусом и кнопкой сканера
+            // Шапка: статус, кнопка клавиатуры и кнопка поиска ТВ
             HStack {
                 VStack(alignment: .leading, spacing: 4) {
                     Text(engine.selectedDevice?.name ?? "ТВ не выбран")
@@ -15,11 +17,24 @@ struct ContentView: View {
                         .font(.caption)
                         .foregroundColor(engine.isConnected ? .green : .secondary)
                 }
+                
                 Spacer()
+                
+                // Кнопка вызова клавиатуры
+                Button(action: { showKeyboardSheet = true }) {
+                    Image(systemName: "keyboard")
+                        .font(.title3)
+                        .padding(10)
+                        .background(Color(.secondarySystemBackground))
+                        .clipShape(Circle())
+                }
+                .disabled(!engine.isConnected)
+                
+                // Кнопка сканирования устройств
                 Button(action: { showDevicePicker = true }) {
                     Image(systemName: "antenna.radiowaves.left.and.right")
-                        .font(.title2)
-                        .padding(8)
+                        .font(.title3)
+                        .padding(10)
                         .background(Color(.secondarySystemBackground))
                         .clipShape(Circle())
                 }
@@ -70,6 +85,7 @@ struct ContentView: View {
             }
             .padding(.bottom, 30)
         }
+        // Модальное окно поиска устройств
         .sheet(isPresented: $showDevicePicker) {
             NavigationView {
                 List(engine.devices) { device in
@@ -89,10 +105,57 @@ struct ContentView: View {
                         }
                     }
                 }
-                .navigationTitle("Найденные устройства")
+                .navigationTitle("Устройства рядом")
                 .navigationBarTitleDisplayMode(.inline)
             }
         }
+        // Окно клавиатуры для быстрого ввода текста
+        .sheet(isPresented: $showKeyboardSheet) {
+            VStack(spacing: 16) {
+                Text("Ввод текста на ТВ")
+                    .font(.headline)
+                    .padding(.top)
+                
+                HStack {
+                    TextField("Напечатайте текст для ТВ...", text: $inputText)
+                        .textFieldStyle(.roundedBorder)
+                        .submitLabel(.send)
+                        .onSubmit {
+                            submitText()
+                        }
+                    
+                    Button(action: submitText) {
+                        Image(systemName: "paperplane.fill")
+                            .padding(8)
+                    }
+                    .buttonStyle(.borderedProminent)
+                }
+                .padding(.horizontal)
+                
+                // Дополнительные клавиши быстрого редактирования
+                HStack(spacing: 20) {
+                    Button(action: { engine.send(cmd: .backspace) }) {
+                        Label("Стереть символ", systemImage: "delete.left")
+                    }
+                    .buttonStyle(.bordered)
+                    
+                    Button(action: { engine.send(cmd: .enter) }) {
+                        Label("Enter / Найти", systemImage: "return")
+                    }
+                    .buttonStyle(.borderedProminent)
+                }
+                
+                Spacer()
+            }
+            .presentationDetents([.fraction(0.35), .medium])
+        }
+    }
+    
+    private func submitText() {
+        guard !inputText.isEmpty else { return }
+        UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+        engine.sendText(inputText)
+        inputText = ""
     }
 }
 
