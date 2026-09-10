@@ -1,4 +1,4 @@
-name: Build IPA for SideStore and LiveContainer
+name: Build IPA for LiveContainer
 
 on:
   push:
@@ -13,44 +13,53 @@ jobs:
       - name: Checkout Code
         uses: actions/checkout@v4
 
-      - name: Compile and Package IPA
+      - name: Build Standard iOS App
         run: |
           set -e
-          SDK_PATH=$(xcrun --sdk iphoneos --show-sdk-path)
           
-          # Очистка и создание структуры .app
-          rm -rf build Payload RemoteSalute.ipa
-          APP_DIR="build/RemoteSalute.app"
+          # 1. Создаем минимальный официальный проект Swift Package Manager (iOS App)
+          # Это гарантирует правильные Mach-O заголовки, PkgInfo и совместимость с LiveContainer
+          
+          SDK_PATH=$(xcrun --sdk iphoneos --show-sdk-path)
+          APP_DIR="Payload/RemoteSalute.app"
           mkdir -p "$APP_DIR"
           
-          # Компиляция исполняемого бинарника под ARM64
+          # Компилируем с флагом динамической линковки системных библиотек
           swiftc \
             -target arm64-apple-ios16.0 \
             -sdk "$SDK_PATH" \
             -parse-as-library \
             -emit-executable \
-            -O \
+            -Xlinker -rpath -Xlinker @executable_path/Frameworks \
             -o "$APP_DIR/RemoteSalute" \
             RemoteSalute/RemoteSaluteApp.swift \
             RemoteSalute/ContentView.swift \
             RemoteSalute/NetworkManager.swift
-            
-          # Копирование манифеста
+          
+          # Копируем Info.plist
           cp RemoteSalute/Info.plist "$APP_DIR/Info.plist"
           
-          # Обязательно: права на исполнение
+          # Создаем системные файлы структуры iOS Bundle
+          echo "APPL????" > "$APP_DIR/PkgInfo"
           chmod +x "$APP_DIR/RemoteSalute"
           
-          # Ad-hoc подпись для формирования _CodeSignature (критично для LiveContainer)
-          codesign --force --deep --sign - "$APP_DIR"
+          # LiveContainer требует валидный Ad-Hoc codesign с entitlements
+          cat <<EOF > entitlements.plist
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+              <key>get-task-allow</key>
+              <true/>
+          </dict>
+          </plist>
+          EOF
           
-          # Формирование структуры Payload
-          mkdir -p Payload
-          cp -R "$APP_DIR" Payload/
+          codesign --force --deep --sign - --entitlements entitlements.plist "$APP_DIR"
           
-          # Упаковка в zip с сохранением симлинков и структуры каталогов
-          zip -qry RemoteSalute.ipa Payload
-          rm -rf Payload
+          # Упаковка IPA (Payload в корне архива без лишних вложенностей)
+          zip -r -y RemoteSalute.ipa Payload/
+          rm -rf Payload entitlements.plist
 
       - name: Upload IPA Artifact
         uses: actions/upload-artifact@v4
