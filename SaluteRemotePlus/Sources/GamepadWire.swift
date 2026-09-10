@@ -3,6 +3,10 @@ import Network
 import CommonCrypto
 
 /// UDP transport for the TV Gamepad service returned by LibSberCast.
+///
+/// Protocol recovered from Salute companion 26.08.1.18263:
+///   protobuf Gamepad -> AES-128-CBC/PKCS7 -> 4-byte order prefix -> 4-byte length prefix
+/// The order counter is outside AES and advances by 2 on a pressed event; release reuses it.
 final class GamepadWire {
     static let shared = GamepadWire()
 
@@ -123,19 +127,35 @@ final class GamepadWire {
     private func sendButton(code: Int, pressed: Bool) {
         guard let connection, let key, let iv else { return }
 
-        order &+= 1
+        // Android OrderEncoder increments the order by 2 for a pressed event.
+        // The following release event keeps the same order value.
+        if pressed {
+            order &+= 2
+        }
+
+        // Message.Gamepad {
+        //   Button button = 1;
+        // }
+        // Button {
+        //   int32 code = 1;
+        //   bool pressed = 2;
+        // }
         let button = protobufButton(code: code, pressed: pressed)
         let gamepad = protobufField(number: 1, wireType: 2, payload: button)
 
-        var plain = Data()
-        plain.append(contentsOf: uint32BE(order))
-        plain.append(gamepad)
+        // Android AesEncoder encrypts ONLY the protobuf bytes.
+        // OrderEncoder then puts the 4-byte order in front of the ciphertext.
+        guard let encrypted = aesCBCEncrypt(gamepad, key: key, iv: iv) else { return }
 
-        guard let encrypted = aesCBCEncrypt(plain, key: key, iv: iv) else { return }
+        var payload = Data()
+        payload.append(contentsOf: uint32BE(order))
+        payload.append(encrypted)
 
+        // Netty LengthFieldPrepender(4) is the last outbound framing stage:
+        // the length is the size of the complete order+ciphertext payload.
         var packet = Data()
-        packet.append(contentsOf: uint32BE(UInt32(encrypted.count)))
-        packet.append(encrypted)
+        packet.append(contentsOf: uint32BE(UInt32(payload.count)))
+        packet.append(payload)
 
         connection.send(content: packet, completion: .contentProcessed { [weak self] error in
             guard let self, let error else { return }
@@ -143,7 +163,6 @@ final class GamepadWire {
                 self.ready = false
                 self.connection?.cancel()
                 self.connection = nil
-                // Do not lose a button when the first UDP socket dies during startup.
                 self.pending.insert((code, pressed), at: 0)
                 self.endpointIndex = min(self.endpointIndex + 1, self.endpointCandidates.count)
                 self.openNextEndpoint()
@@ -190,15 +209,14 @@ final class GamepadWire {
     }
 
     private func decodeKey(_ value: String) -> Data? {
-        if let d = Data(base64Encoded: value), [16, 24, 32].contains(d.count) { return d }
-        let normalized = value.replacingOccurrences(of: "-", with: "")
-        if let d = Data(hex: normalized), [16, 24, 32].contains(d.count) { return d }
-        return nil
+        guard let data = Data(base64Encoded: value), data.count == kCCKeySizeAES128 else {
+            return nil
+        }
+        return data
     }
 
     private func aesCBCEncrypt(_ data: Data, key: Data, iv: Data) -> Data? {
-        guard iv.count == kCCBlockSizeAES128,
-              [kCCKeySizeAES128, kCCKeySizeAES192, kCCKeySizeAES256].contains(key.count) else { return nil }
+        guard iv.count == kCCBlockSizeAES128, key.count == kCCKeySizeAES128 else { return nil }
 
         let outputCapacity = data.count + kCCBlockSizeAES128
         var output = Data(count: outputCapacity)
@@ -229,20 +247,5 @@ final class GamepadWire {
         guard status == kCCSuccess else { return nil }
         output.count = moved
         return output
-    }
-}
-
-private extension Data {
-    init?(hex: String) {
-        guard hex.count % 2 == 0 else { return nil }
-        var result = Data(capacity: hex.count / 2)
-        var index = hex.startIndex
-        while index < hex.endIndex {
-            let next = hex.index(index, offsetBy: 2)
-            guard let byte = UInt8(hex[index..<next], radix: 16) else { return nil }
-            result.append(byte)
-            index = next
-        }
-        self = result
     }
 }
