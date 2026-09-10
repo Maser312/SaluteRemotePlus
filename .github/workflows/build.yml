@@ -21,14 +21,16 @@ jobs:
 
       - name: Build App
         run: |
-          xcodebuild -project RemoteSalute.xcodeproj \
+          xcodebuild \
+            -project RemoteSalute.xcodeproj \
             -scheme RemoteSalute \
             -sdk iphoneos \
             -configuration Release \
             -derivedDataPath build/ \
+            CODE_SIGNING_ALLOWED="NO" \
+            CODE_SIGNING_REQUIRED="NO" \
             CODE_SIGN_IDENTITY="" \
-            CODE_SIGNING_REQUIRED=NO \
-            CODE_SIGNING_ALLOWED=NO
+            build
 
       - name: Package to IPA
         run: |
