@@ -1,4 +1,5 @@
 import Foundation
+import Network
 import LibSberCast
 
 @MainActor
@@ -13,6 +14,7 @@ final class SberCastRemote: NSObject, ObservableObject, LibSberCast.SberCastList
 
     private let cast: any LibSberCast.SberCast
     private var activeDeviceID: String?
+    private var permissionBrowser: NWBrowser?
 
     override init() {
         self.cast = LibSberCast.SberCastFactory.makeSberCast(clientName: "SaluteRemotePlus")
@@ -24,11 +26,44 @@ final class SberCastRemote: NSObject, ObservableObject, LibSberCast.SberCastList
 
     func start() {
         error = nil
-        status = "Ищем телевизор…"
-        cast.start()
+        status = "Запрашиваем доступ к локальной сети…"
+
+        // Force iOS to perform the Local Network/Bonjour authorization before
+        // Jazz starts its own NSNetServiceBrowser. This avoids the -72008
+        // missing-configuration/policy failure on recent iOS versions.
+        let browser = NWBrowser(
+            for: .bonjour(type: "_staros._tcp", domain: "local."),
+            using: .tcp
+        )
+        permissionBrowser = browser
+        browser.stateUpdateHandler = { [weak self] state in
+            DispatchQueue.main.async {
+                guard let self else { return }
+                switch state {
+                case .ready:
+                    self.permissionBrowser?.cancel()
+                    self.permissionBrowser = nil
+                    self.status = "Ищем телевизор…"
+                    self.cast.start()
+                case .failed(let error):
+                    self.permissionBrowser?.cancel()
+                    self.permissionBrowser = nil
+                    self.error = "Доступ к локальной сети: \(error.localizedDescription)"
+                    self.status = "Ищем телевизор…"
+                    self.cast.start()
+                case .cancelled:
+                    break
+                default:
+                    break
+                }
+            }
+        }
+        browser.start(queue: DispatchQueue(label: "SaluteRemotePlus.LocalNetwork"))
     }
 
     func stop() {
+        permissionBrowser?.cancel()
+        permissionBrowser = nil
         cast.stop()
         status = "Остановлено"
     }
