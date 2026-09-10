@@ -16,6 +16,9 @@ final class SberCastRemote: NSObject, ObservableObject, LibSberCast.SberCastList
     private var activeDeviceID: String?
     private var permissionBrowser: NWBrowser?
     private var autoConnectAttempted = false
+    private var started = false
+    private var gamepadRequestInFlight = false
+    private var gamepadRetryTask: Task<Void, Never>?
 
     private let savedDeviceIDKey = "SaluteRemotePlus.savedDeviceID"
     private let savedDeviceNameKey = "SaluteRemotePlus.savedDeviceName"
@@ -29,6 +32,8 @@ final class SberCastRemote: NSObject, ObservableObject, LibSberCast.SberCastList
     }
 
     func start() {
+        guard !started else { return }
+        started = true
         error = nil
         autoConnectAttempted = false
         status = "Подключаемся к локальной сети…"
@@ -64,13 +69,22 @@ final class SberCastRemote: NSObject, ObservableObject, LibSberCast.SberCastList
     }
 
     func stop() {
+        gamepadRetryTask?.cancel()
+        gamepadRetryTask = nil
+        gamepadRequestInFlight = false
         permissionBrowser?.cancel()
         permissionBrowser = nil
         cast.stop()
+        started = false
         status = "Остановлено"
     }
 
     func connect(_ device: LibSberCast.SberCastDevice, save: Bool = true) {
+        gamepadRetryTask?.cancel()
+        gamepadRetryTask = nil
+        gamepadRequestInFlight = false
+        session = nil
+
         activeDeviceID = device.id
         connectedDevice = device
         needsPin = false
@@ -91,12 +105,14 @@ final class SberCastRemote: NSObject, ObservableObject, LibSberCast.SberCastList
         guard !autoConnectAttempted,
               let savedID = UserDefaults.standard.string(forKey: savedDeviceIDKey),
               let device = devices.first(where: { $0.id == savedID }) else { return }
-
         autoConnectAttempted = true
         connect(device, save: false)
     }
 
     func forgetSavedDevice() {
+        gamepadRetryTask?.cancel()
+        gamepadRetryTask = nil
+        gamepadRequestInFlight = false
         UserDefaults.standard.removeObject(forKey: savedDeviceIDKey)
         UserDefaults.standard.removeObject(forKey: savedDeviceNameKey)
         session = nil
@@ -113,13 +129,25 @@ final class SberCastRemote: NSObject, ObservableObject, LibSberCast.SberCastList
     }
 
     private func requestGamepadSession() {
-        guard let id = activeDeviceID else { return }
+        guard let id = activeDeviceID, !gamepadRequestInFlight else { return }
+        gamepadRequestInFlight = true
         let sid = UUID().uuidString
         status = "Запускаем канал пульта…"
         _ = cast.sendRequest(
             deviceId: id,
             request: LibSberCast.CastRequest(type: .getGamepadSessionCastRequest(sessionId: sid))
         )
+
+        gamepadRetryTask?.cancel()
+        gamepadRetryTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 3_000_000_000)
+            guard !Task.isCancelled else { return }
+            await MainActor.run {
+                guard let self, self.gamepadRequestInFlight, self.session == nil else { return }
+                self.gamepadRequestInFlight = false
+                self.requestGamepadSession()
+            }
+        }
     }
 
     func onStatusChanged(status: LibSberCast.CastStatus) {
@@ -132,6 +160,7 @@ final class SberCastRemote: NSObject, ObservableObject, LibSberCast.SberCastList
 
     func onError(error: LibSberCast.CastError) {
         self.error = error.msg
+        self.gamepadRequestInFlight = false
         self.status = "Ошибка подключения"
     }
 
@@ -141,23 +170,22 @@ final class SberCastRemote: NSObject, ObservableObject, LibSberCast.SberCastList
             status = "Телевизор не найден"
             return
         }
-
-        if !autoConnectAttempted {
-            reconnectSavedDeviceIfPossible()
-        }
-
-        if connectedDevice == nil {
-            status = "Выберите телевизор"
-        }
+        if !autoConnectAttempted { reconnectSavedDeviceIfPossible() }
+        if connectedDevice == nil { status = "Выберите телевизор" }
     }
 
     func onCastMessageResponse(message: LibSberCast.CastMessage) {
-        if message.code != .success {
-            error = message.description
-        }
+        if message.code != .success { error = message.description }
     }
 
     func onCastRequestResponse(response: LibSberCast.CastRequestResponse) {
+        guard response.code == .success else {
+            gamepadRequestInFlight = false
+            error = "Запрос к телевизору отклонён (\(response.code))"
+            status = "Ошибка подключения"
+            return
+        }
+
         switch response.type {
         case .pinConnectCastResponse(let deviceId, let status):
             activeDeviceID = deviceId
@@ -169,7 +197,8 @@ final class SberCastRemote: NSObject, ObservableObject, LibSberCast.SberCastList
                 needsPin = false
                 requestGamepadSession()
             default:
-                self.error = "Телевизор отклонил подключение"
+                error = "Телевизор отклонил подключение"
+                self.status = "Ошибка подключения"
             }
 
         case .pinConnectConfirmationCastResponse(let deviceId, let status, let token):
@@ -182,12 +211,27 @@ final class SberCastRemote: NSObject, ObservableObject, LibSberCast.SberCastList
                 requestGamepadSession()
             default:
                 error = "Неверный код или подключение запрещено"
+                self.status = "Ошибка подключения"
             }
 
         case .gamepadSessionConnectionInfoCastResponse(let deviceId, let status, let sessionId, let port, let serviceVersion, let aesKey, let ipV4List):
+            gamepadRequestInFlight = false
+            gamepadRetryTask?.cancel()
+            gamepadRetryTask = nil
+
             guard status == .success else {
                 session = nil
-                error = "Телевизор не предоставил канал пульта"
+                error = "Канал пульта: \(status)"
+                self.status = "Канал пульта недоступен"
+                requestGamepadSession()
+                return
+            }
+
+            guard !sessionId.isEmpty, port > 0, !aesKey.isEmpty, !ipV4List.isEmpty else {
+                session = nil
+                error = "Телевизор вернул неполные параметры канала пульта"
+                self.status = "Канал пульта недоступен"
+                requestGamepadSession()
                 return
             }
 
