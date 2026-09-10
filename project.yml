@@ -10,9 +10,8 @@ targets:
     deploymentTarget: "15.0"
     sources:
       - path: SaluteRemotePlus/Sources
-    info:
-      path: SaluteRemotePlus/Resources/Info.plist
     settings:
+      INFOPLIST_FILE: SaluteRemotePlus/Resources/Info.plist
       PRODUCT_BUNDLE_IDENTIFIER: com.andrey.saluteremoteplus
       PRODUCT_NAME: SaluteRemotePlus
       SWIFT_VERSION: "5.0"
