@@ -13,82 +13,47 @@ jobs:
       - name: Checkout Code
         uses: actions/checkout@v4
 
-      - name: Compile and Package for SideStore
+      - name: Select Xcode
+        uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: latest-stable
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Generate Xcode project
+        run: xcodegen generate --spec project.yml
+
+      - name: Build unsigned iOS app
         run: |
-          set -e
-          SDK_PATH=$(xcrun --sdk iphoneos --show-sdk-path)
-          
-          rm -rf Payload RemoteSalute.app RemoteSalute.ipa
-          mkdir -p Payload/RemoteSalute.app
-          
-          # 1. Компиляция бинарника под arm64
-          swiftc \
-            -target arm64-apple-ios16.0 \
-            -sdk "$SDK_PATH" \
-            -parse-as-library \
-            -O \
-            -o Payload/RemoteSalute.app/RemoteSalute \
-            RemoteSalute/RemoteSaluteApp.swift \
-            RemoteSalute/ContentView.swift \
-            RemoteSalute/NetworkManager.swift
+          set -euo pipefail
+          rm -rf build Payload RemoteSalute.ipa
+          xcodebuild \
+            -project RemoteSalute.xcodeproj \
+            -scheme RemoteSalute \
+            -configuration Release \
+            -sdk iphoneos \
+            -derivedDataPath build/DerivedData \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            AD_HOC_CODE_SIGNING_ALLOWED=NO \
+            build
 
-          # 2. Формируем валидный Info.plist со всеми ключами для ldid
-          cat << 'EOF' > Payload/RemoteSalute.app/Info.plist
-          <?xml version="1.0" encoding="UTF-8"?>
-          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-          <plist version="1.0">
-          <dict>
-              <key>CFBundleDevelopmentRegion</key>
-              <string>en</string>
-              <key>CFBundleExecutable</key>
-              <string>RemoteSalute</string>
-              <key>CFBundleIdentifier</key>
-              <string>com.local.remotesalute</string>
-              <key>CFBundleInfoDictionaryVersion</key>
-              <string>6.0</string>
-              <key>CFBundleName</key>
-              <string>RemoteSalute</string>
-              <key>CFBundlePackageType</key>
-              <string>APPL</string>
-              <key>CFBundleShortVersionString</key>
-              <string>1.0</string>
-              <key>CFBundleVersion</key>
-              <string>1</string>
-              <key>LSRequiresIPhoneOS</key>
-              <true/>
-              <key>MinimumOSVersion</key>
-              <string>16.0</string>
-              <key>DTPlatformName</key>
-              <string>iphoneos</string>
-              <key>DTSDKName</key>
-              <string>iphoneos</string>
-              <key>UILaunchScreen</key>
-              <dict/>
-              <key>UISupportedInterfaceOrientations</key>
-              <array>
-                  <string>UIInterfaceOrientationPortrait</string>
-              </array>
-              <key>NSLocalNetworkUsageDescription</key>
-              <string>Автопоиск телевизора Салют ТВ в локальной сети</string>
-              <key>NSBluetoothAlwaysUsageDescription</key>
-              <string>Подключение к телевизору Салют ТВ по Bluetooth</string>
-          </dict>
-          </plist>
-          EOF
-
-          # 3. Конвертируем Info.plist в бинарный формат Apple (спасает ldid от ошибки node != NULL)
-          plutil -convert binary1 Payload/RemoteSalute.app/Info.plist
-
-          # 4. Создаем PkgInfo и даем права на запуск
-          printf "APPL????" > Payload/RemoteSalute.app/PkgInfo
-          chmod +x Payload/RemoteSalute.app/RemoteSalute
-
-          # 5. Упаковка в IPA
-          zip -r -y RemoteSalute.ipa Payload
-          rm -rf Payload
+      - name: Package IPA
+        run: |
+          set -euo pipefail
+          APP_PATH="build/DerivedData/Build/Products/Release-iphoneos/RemoteSalute.app"
+          test -d "$APP_PATH"
+          mkdir -p Payload
+          cp -R "$APP_PATH" Payload/
+          rm -rf Payload/RemoteSalute.app/_CodeSignature
+          zip -qry RemoteSalute.ipa Payload
+          test -s RemoteSalute.ipa
 
       - name: Upload IPA
         uses: actions/upload-artifact@v4
         with:
           name: RemoteSalute
           path: RemoteSalute.ipa
+          if-no-files-found: error
