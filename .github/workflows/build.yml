@@ -1,4 +1,4 @@
-name: Build IPA
+name: Build for SideStore
 
 on:
   push:
@@ -13,7 +13,7 @@ jobs:
       - name: Checkout Code
         uses: actions/checkout@v4
 
-      - name: Compile and Package
+      - name: Compile and Package for SideStore
         run: |
           set -e
           SDK_PATH=$(xcrun --sdk iphoneos --show-sdk-path)
@@ -21,6 +21,7 @@ jobs:
           rm -rf Payload RemoteSalute.app RemoteSalute.ipa
           mkdir -p Payload/RemoteSalute.app
           
+          # 1. Чистая компиляция под процессор iPhone (ARM64)
           swiftc \
             -target arm64-apple-ios16.0 \
             -sdk "$SDK_PATH" \
@@ -31,13 +32,13 @@ jobs:
             RemoteSalute/ContentView.swift \
             RemoteSalute/NetworkManager.swift
 
+          # 2. Копируем Info.plist и создаем PkgInfo
           cp RemoteSalute/Info.plist Payload/RemoteSalute.app/Info.plist
           printf "APPL????" > Payload/RemoteSalute.app/PkgInfo
-          chmod 755 Payload/RemoteSalute.app/RemoteSalute
+          chmod +x Payload/RemoteSalute.app/RemoteSalute
 
-          codesign --force --deep --sign - Payload/RemoteSalute.app
-
-          /usr/bin/zip -r -y RemoteSalute.ipa Payload
+          # 3. Упаковка в стандартный IPA для SideStore
+          zip -r -y RemoteSalute.ipa Payload
           rm -rf Payload
 
       - name: Upload IPA
