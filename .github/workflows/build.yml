@@ -22,20 +22,20 @@ jobs:
           rm -rf Payload build RemoteSalute.ipa
           mkdir -p "$APP_DIR"
           
-          # 1. Компилируем основной код как ДИНАМИЧЕСКУЮ БИБЛИОТЕКУ (dylib) для LiveContainer (dlopen)
+          # 1. Компилируем dylib с правильной передачей флагов линкеру
           swiftc \
             -target arm64-apple-ios16.0 \
             -sdk "$SDK_PATH" \
             -parse-as-library \
             -emit-library \
-            -install_name @executable_path/RemoteSalute.dylib \
+            -Xlinker -install_name -Xlinker @executable_path/RemoteSalute.dylib \
             -Xlinker -rpath -Xlinker @executable_path/Frameworks \
             -o "$APP_DIR/RemoteSalute.dylib" \
             RemoteSalute/RemoteSaluteApp.swift \
             RemoteSalute/ContentView.swift \
             RemoteSalute/NetworkManager.swift
 
-          # 2. Создаем Mach-O исполняемую заглушку (LiveContainer перехватит вызов и загрузит dylib)
+          # 2. Создаем Mach-O заглушку
           cat << 'EOF' > stub.c
           #include <dlfcn.h>
           #include <stdio.h>
@@ -53,15 +53,15 @@ jobs:
           clang -isysroot "$SDK_PATH" -target arm64-apple-ios16.0 stub.c -o "$APP_DIR/RemoteSalute"
           rm stub.c
 
-          # 3. Копируем Info.plist и создаем системный PkgInfo
+          # 3. Копируем Info.plist и PkgInfo
           cp RemoteSalute/Info.plist "$APP_DIR/Info.plist"
           echo "APPL????" > "$APP_DIR/PkgInfo"
           
-          # 4. Выставляем права на исполнение
+          # 4. Права доступа
           chmod 755 "$APP_DIR/RemoteSalute"
           chmod 755 "$APP_DIR/RemoteSalute.dylib"
 
-          # 5. Ad-Hoc подпись бандла и библиотеки
+          # 5. Ad-Hoc подпись
           codesign --force --sign - "$APP_DIR/RemoteSalute.dylib"
           codesign --force --sign - "$APP_DIR"
 
