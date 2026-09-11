@@ -3,14 +3,25 @@ import UIKit
 
 struct ContentView: View {
     @StateObject private var remote = SberCastRemote()
+    @Environment(\.scenePhase) private var scenePhase
 
     var body: some View {
         ZStack {
             LinearGradient(colors: [.black, Color(red: 0.08, green: 0.04, blue: 0.13), .black], startPoint: .topLeading, endPoint: .bottomTrailing).ignoresSafeArea()
-            if remote.session != nil { RemotePadView(remote: remote) } else { ConnectionView(remote: remote) }
+            if remote.connectedDevice != nil { RemotePadView(remote: remote) } else { ConnectionView(remote: remote) }
         }
         .preferredColorScheme(.dark)
-        .onAppear { remote.start() }
+        .onAppear { remote.resume() }
+        .onChange(of: scenePhase) { phase in
+            switch phase {
+            case .active:
+                remote.resume()
+            case .background:
+                remote.pause()
+            default:
+                break
+            }
+        }
     }
 }
 
