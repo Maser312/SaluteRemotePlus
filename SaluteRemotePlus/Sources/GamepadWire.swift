@@ -2,8 +2,9 @@ import Foundation
 import Network
 import CommonCrypto
 
-/// UDP transport for the TV Gamepad service returned by LibSberCast.
-/// Protocol recovered from the Salute companion: protobuf Gamepad -> AES-128-CBC/PKCS7 -> order -> length.
+/// Stream transport for the TV Gamepad service returned by LibSberCast.
+/// Protocol recovered from the Salute companion: protobuf Gamepad -> AES-128-CBC/PKCS7 -> order -> 4-byte length prefix.
+/// The length prefix is Netty-style framing, so the gamepad channel is a TCP stream, not a UDP datagram channel.
 final class GamepadWire {
     static let shared = GamepadWire()
 
@@ -69,10 +70,12 @@ final class GamepadWire {
         }
 
         let host = endpointCandidates[endpointIndex]
+        // The Android companion uses Netty length-field framing. That framing belongs
+        // to a reliable byte stream, so use TCP here rather than UDP datagrams.
         let c = NWConnection(
             host: NWEndpoint.Host(host),
             port: NWEndpoint.Port(rawValue: currentPort)!,
-            using: .udp
+            using: .tcp
         )
 
         c.stateUpdateHandler = { [weak self, weak c] state in
@@ -153,25 +156,32 @@ final class GamepadWire {
         packet.append(payload)
 
         sendInFlight = true
-        connection.send(content: packet, completion: .contentProcessed { [weak self] error in
+        connection.send(content: packet, contentContext: .defaultMessage, isComplete: true) { [weak self] result in
             guard let self else { return }
             self.queue.async {
                 self.sendInFlight = false
-                if error != nil {
-                    // Requeue the exact event. Undo the order increment for a failed press
-                    // so a retransmission uses the same sequence number.
+                switch result {
+                case .contentProcessed(nil):
+                    self.flushIfReady()
+
+                case .contentProcessed(let error?):
                     if pressed { self.order &-= 2 }
                     self.pending.insert((code, pressed), at: 0)
                     self.ready = false
                     self.connection?.cancel()
                     self.connection = nil
                     self.endpointIndex = min(self.endpointIndex + 1, self.endpointCandidates.count)
+                    _ = error
                     self.openNextEndpoint()
-                } else {
+
+                case .idempotent:
+                    self.flushIfReady()
+
+                @unknown default:
                     self.flushIfReady()
                 }
             }
-        })
+        }
     }
 
     private func protobufButton(code: Int, pressed: Bool) -> Data {
