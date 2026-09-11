@@ -70,8 +70,7 @@ final class GamepadWire {
         }
 
         let host = endpointCandidates[endpointIndex]
-        // The Android companion uses Netty length-field framing. That framing belongs
-        // to a reliable byte stream, so use TCP here rather than UDP datagrams.
+        // Netty length-field framing requires a reliable byte stream.
         let c = NWConnection(
             host: NWEndpoint.Host(host),
             port: NWEndpoint.Port(rawValue: currentPort)!,
@@ -88,12 +87,11 @@ final class GamepadWire {
                     self.sendInFlight = false
                     self.flushIfReady()
 
-                case .failed(let error):
+                case .failed:
                     self.ready = false
                     self.connection = nil
                     self.sendInFlight = false
                     self.endpointIndex += 1
-                    _ = error
                     self.openNextEndpoint()
 
                 case .cancelled:
@@ -156,7 +154,10 @@ final class GamepadWire {
         packet.append(payload)
 
         sendInFlight = true
-        connection.send(content: packet, contentContext: .defaultMessage, isComplete: true) { [weak self] result in
+        // IMPORTANT: keep the TCP stream open. isComplete=true sends an EOF on the
+        // connection's write side after every button packet, so the next button
+        // cannot use the same Gamepad session.
+        connection.send(content: packet, contentContext: .defaultMessage, isComplete: false) { [weak self] result in
             guard let self else { return }
             self.queue.async {
                 self.sendInFlight = false
