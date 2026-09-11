@@ -17,9 +17,11 @@ final class SberCastRemote: NSObject, ObservableObject, LibSberCast.SberCastList
     private var permissionBrowser: NWBrowser?
     private var autoConnectAttempted = false
     private var started = false
+    private var paused = false
     private var gamepadRequestInFlight = false
     private var gamepadRetryTask: Task<Void, Never>?
     private var gamepadRetryCount = 0
+    private var restartTask: Task<Void, Never>?
 
     private let savedDeviceIDKey = "SaluteRemotePlus.savedDeviceID"
     private let savedDeviceNameKey = "SaluteRemotePlus.savedDeviceName"
@@ -39,10 +41,43 @@ final class SberCastRemote: NSObject, ObservableObject, LibSberCast.SberCastList
     func start() {
         guard !started else { return }
         started = true
+        paused = false
         error = nil
         autoConnectAttempted = false
         gamepadRetryCount = 0
         status = hasSavedDevice ? "Восстанавливаем телевизор…" : "Подключаемся к локальной сети…"
+        startBonjourPermissionProbe()
+    }
+
+    func resume() {
+        paused = false
+        if !started {
+            start()
+            return
+        }
+
+        // Do not create a second Bonjour browser when returning from background.
+        // The SberCast instance remains alive; only the permission probe is recreated
+        // if iOS cancelled it while the app was inactive.
+        if permissionBrowser == nil && connectedDevice == nil {
+            startBonjourPermissionProbe()
+        } else if connectedDevice != nil {
+            reconnectGamepadIfNeeded()
+        } else {
+            reconnectSavedDeviceIfPossible()
+        }
+    }
+
+    func pause() {
+        paused = true
+        // Keep LibSberCast alive across background/foreground transitions.
+        // Recreating it here causes Bonjour service errors on the next appearance.
+        permissionBrowser?.cancel()
+        permissionBrowser = nil
+    }
+
+    private func startBonjourPermissionProbe() {
+        guard !paused, permissionBrowser == nil else { return }
 
         let browser = NWBrowser(
             for: .bonjour(type: "_staros._tcp", domain: "local."),
@@ -50,22 +85,29 @@ final class SberCastRemote: NSObject, ObservableObject, LibSberCast.SberCastList
         )
         permissionBrowser = browser
         browser.stateUpdateHandler = { [weak self] state in
-            DispatchQueue.main.async {
+            Task { @MainActor [weak self] in
                 guard let self else { return }
                 switch state {
                 case .ready:
                     self.permissionBrowser?.cancel()
                     self.permissionBrowser = nil
+                    guard !self.paused else { return }
                     self.status = self.hasSavedDevice ? "Ищем сохранённый телевизор…" : "Ищем телевизор…"
                     self.cast.start()
                 case .failed(let error):
                     self.permissionBrowser?.cancel()
                     self.permissionBrowser = nil
-                    self.error = "Доступ к локальной сети: \(error.localizedDescription)"
-                    self.status = self.hasSavedDevice ? "Не удалось восстановить телевизор" : "Ищем телевизор…"
-                    self.cast.start()
+                    guard !self.paused else { return }
+
+                    // -72000 is the Bonjour/local-network service error. Do not turn
+                    // it into a permanent connection failure; retry after iOS settles.
+                    self.error = error.errorCode == -72000
+                        ? nil
+                        : "Доступ к локальной сети: \(error.localizedDescription)"
+                    self.status = self.hasSavedDevice ? "Восстанавливаем телевизор…" : "Ищем телевизор…"
+                    self.scheduleBonjourRetry()
                 case .cancelled:
-                    break
+                    self.permissionBrowser = nil
                 default:
                     break
                 }
@@ -74,7 +116,23 @@ final class SberCastRemote: NSObject, ObservableObject, LibSberCast.SberCastList
         browser.start(queue: DispatchQueue(label: "SaluteRemotePlus.LocalNetwork"))
     }
 
+    private func scheduleBonjourRetry() {
+        restartTask?.cancel()
+        restartTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 800_000_000)
+            guard !Task.isCancelled else { return }
+            await MainActor.run {
+                guard let self, !self.paused, self.started else { return }
+                if self.permissionBrowser == nil && self.connectedDevice == nil {
+                    self.startBonjourPermissionProbe()
+                }
+            }
+        }
+    }
+
     func stop() {
+        restartTask?.cancel()
+        restartTask = nil
         gamepadRetryTask?.cancel()
         gamepadRetryTask = nil
         gamepadRequestInFlight = false
@@ -82,6 +140,7 @@ final class SberCastRemote: NSObject, ObservableObject, LibSberCast.SberCastList
         permissionBrowser = nil
         cast.stop()
         started = false
+        paused = false
         status = hasSavedDevice ? "Остановлено — телевизор сохранён" : "Остановлено"
     }
 
@@ -114,6 +173,14 @@ final class SberCastRemote: NSObject, ObservableObject, LibSberCast.SberCastList
               let device = devices.first(where: { $0.id == savedID }) else { return }
         autoConnectAttempted = true
         connect(device, save: false)
+    }
+
+    private func reconnectGamepadIfNeeded() {
+        guard connectedDevice != nil, session == nil, !needsPin else { return }
+        if !gamepadRequestInFlight {
+            gamepadRetryCount = 0
+            requestGamepadSession()
+        }
     }
 
     func forgetSavedDevice() {
@@ -151,8 +218,9 @@ final class SberCastRemote: NSObject, ObservableObject, LibSberCast.SberCastList
         gamepadRetryTask = Task { [weak self] in
             try? await Task.sleep(nanoseconds: 3_000_000_000)
             guard !Task.isCancelled else { return }
+            guard let self else { return }
             await MainActor.run {
-                guard let self, self.gamepadRequestInFlight, self.session == nil else { return }
+                guard self.gamepadRequestInFlight, self.session == nil else { return }
                 self.gamepadRequestInFlight = false
                 self.gamepadRetryCount += 1
                 if self.gamepadRetryCount <= 5 {
