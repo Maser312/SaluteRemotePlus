@@ -78,6 +78,7 @@ struct StatusCard: View {
 
 struct RemotePadView: View {
     @ObservedObject var remote: SberCastRemote
+    @State private var showKeyboard = false
     var body: some View {
         GeometryReader { proxy in
             ScrollView(showsIndicators: false) {
@@ -98,13 +99,18 @@ struct RemotePadView: View {
                     }.padding(18).background(.white.opacity(0.055), in: RoundedRectangle(cornerRadius: 30))
                     HStack(spacing: 10) { SmallRemoteButton(symbol: "speaker.wave.1.fill", title: "VOL −") { send(.volumeDown) }; SmallRemoteButton(symbol: "speaker.slash.fill", title: "MUTE") { send(.mute) }; SmallRemoteButton(symbol: "speaker.wave.3.fill", title: "VOL +") { send(.volumeUp) } }
                     HStack(spacing: 10) { SmallRemoteButton(symbol: "chevron.down.2", title: "CH −") { send(.channelDown) }; SmallRemoteButton(symbol: "playpause.fill", title: "PLAY") { send(.playPause) }; SmallRemoteButton(symbol: "chevron.up.2", title: "CH +") { send(.channelUp) } }
+                    HStack(spacing: 10) {
+                        SmallRemoteButton(symbol: remote.voiceState == .idle ? "mic.fill" : "stop.fill", title: remote.voiceState == .idle ? "Голос" : (remote.voiceState == .starting ? "Подключаем…" : "Говорите…"), highlighted: remote.voiceState != .idle) { Haptics.tap(); remote.toggleVoice() }
+                        SmallRemoteButton(symbol: "keyboard", title: "Текст") { Haptics.tap(); showKeyboard = true }
+                    }
                     HStack(spacing: 10) { SmallRemoteButton(symbol: "magnifyingglass", title: "Поиск") { send(.search) }; SmallRemoteButton(symbol: "rectangle.on.rectangle", title: "Источник") { send(.source) } }
-                    Text(remote.status).font(.caption).foregroundStyle(.white.opacity(0.4)).padding(.bottom, max(8, proxy.safeAreaInsets.bottom))
+                    Text(remote.error ?? remote.notice ?? (remote.wireReady ? "Пульт готов" : remote.status)).font(.caption).foregroundStyle(remote.error == nil ? Color.white.opacity(0.4) : Color.red.opacity(0.9)).multilineTextAlignment(.center).padding(.bottom, max(8, proxy.safeAreaInsets.bottom))
                 }.padding(.horizontal, 18).padding(.top, max(10, proxy.safeAreaInsets.top))
             }
         }
+        .sheet(isPresented: $showKeyboard) { TextInputSheet(remote: remote) }
     }
-    private func send(_ command: RemoteCommand) { Haptics.tap(); GamepadWire.shared.send(command: command, session: remote.session) }
+    private func send(_ command: RemoteCommand) { Haptics.tap(); remote.send(command) }
 }
 
 struct RemoteTopBar: View {
@@ -118,8 +124,36 @@ struct RemoteButton: View {
 }
 
 struct SmallRemoteButton: View {
-    let symbol: String; let title: String; let action: () -> Void
-    var body: some View { Button(action: action) { VStack(spacing: 7) { Image(systemName: symbol).font(.title3.weight(.semibold)); Text(title).font(.caption2.weight(.semibold)) }.foregroundStyle(.white).frame(maxWidth: .infinity).frame(height: 66).background(.white.opacity(0.07), in: RoundedRectangle(cornerRadius: 18)) }.buttonStyle(.plain) }
+    let symbol: String; let title: String; var highlighted = false; let action: () -> Void
+    var body: some View { Button(action: action) { VStack(spacing: 7) { Image(systemName: symbol).font(.title3.weight(.semibold)); Text(title).font(.caption2.weight(.semibold)) }.foregroundStyle(.white).frame(maxWidth: .infinity).frame(height: 66).background(highlighted ? Color.purple.opacity(0.75) : Color.white.opacity(0.07), in: RoundedRectangle(cornerRadius: 18)) }.buttonStyle(.plain) }
+}
+
+struct TextInputSheet: View {
+    @ObservedObject var remote: SberCastRemote
+    @Environment(\.dismiss) private var dismiss
+    @State private var text = ""
+    @FocusState private var focused: Bool
+    var body: some View {
+        VStack(spacing: 16) {
+            Text("Ввод текста на ТВ").font(.headline).padding(.top, 20)
+            Text("Сначала выберите поле ввода на ТВ (кнопкой OK).").font(.caption).foregroundStyle(.white.opacity(0.5)).multilineTextAlignment(.center)
+            TextField("Что набрать…", text: $text).focused($focused).submitLabel(.send).onSubmit { send(submit: true) }.padding(14).background(.white.opacity(0.08), in: RoundedRectangle(cornerRadius: 14))
+            HStack(spacing: 10) {
+                Button { Haptics.tap(); remote.sendKey(KeyMap.backspace) } label: { Label("Стереть", systemImage: "delete.left").frame(maxWidth: .infinity).padding(.vertical, 12) }.buttonStyle(.bordered)
+                Button { Haptics.tap(); remote.sendKey(KeyMap.enter) } label: { Label("Enter", systemImage: "return").frame(maxWidth: .infinity).padding(.vertical, 12) }.buttonStyle(.bordered)
+            }
+            Button { send(submit: true) } label: { Text("Набрать и нажать Enter").font(.headline).frame(maxWidth: .infinity).padding(.vertical, 14) }.buttonStyle(.borderedProminent).disabled(text.isEmpty)
+            Button { remote.typeText(text, submit: false); Haptics.tap() } label: { Text("Только набрать").frame(maxWidth: .infinity).padding(.vertical, 10) }.buttonStyle(.bordered).disabled(text.isEmpty)
+            Button { remote.youtubeSearch(text); Haptics.tap(); dismiss() } label: { Label("Искать на YouTube (любой язык)", systemImage: "play.rectangle").frame(maxWidth: .infinity).padding(.vertical, 10) }.buttonStyle(.bordered).disabled(text.isEmpty)
+            if let notice = remote.notice { Text(notice).font(.caption).foregroundStyle(.orange).multilineTextAlignment(.center) }
+            Spacer()
+        }.padding(.horizontal, 20).preferredColorScheme(.dark).onAppear { focused = true }
+    }
+    private func send(submit: Bool) {
+        guard !text.isEmpty else { return }
+        Haptics.tap(); remote.typeText(text, submit: submit)
+        if remote.notice == nil { text = ""; dismiss() }
+    }
 }
 
 enum Haptics { static func tap() { UIImpactFeedbackGenerator(style: .light).impactOccurred() } }

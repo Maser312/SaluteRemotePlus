@@ -1,13 +1,22 @@
 import Foundation
 import Network
 import LibSberCast
+import Combine
 
 @MainActor
-final class SberCastRemote: NSObject, ObservableObject, LibSberCast.SberCastListener {
+final class SberCastRemote: NSObject, ObservableObject, LibSberCast.SberCastListener, LibSberCast.VoiceTransportListener {
     @Published private(set) var devices: [LibSberCast.SberCastDevice] = []
     @Published private(set) var status = "Запуск…"
     @Published private(set) var connectedDevice: LibSberCast.SberCastDevice?
-    @Published private(set) var session: GamepadSession?
+    @Published private(set) var session: GamepadSession? {
+        didSet { if let s = session { wire.prepare(session: s) } else { wire.stop() } }
+    }
+    @Published private(set) var wireReady = false
+    @Published private(set) var voiceState: VoiceState = .idle
+    @Published private(set) var notice: String?
+    enum VoiceState: Equatable { case idle, starting, listening }
+    let wire = GamepadWire()
+    private let mic = MicStreamer()
     @Published var pin: String = ""
     @Published private(set) var needsPin = false
     @Published private(set) var error: String?
@@ -32,6 +41,69 @@ final class SberCastRemote: NSObject, ObservableObject, LibSberCast.SberCastList
         cast.addListener(listener: self)
         cast.setClientName(name: "SaluteRemotePlus")
         cast.setClientId(name: "saluteremoteplus")
+        _ = cast.voiceTransport.resetListener(listener: self)
+        wire.$ready.receive(on: DispatchQueue.main).assign(to: &$wireReady)
+    }
+
+    // MARK: - Кнопки, текст, голос
+    func send(_ command: RemoteCommand) {
+        guard session != nil else { notice = "Канал пульта ещё не готов"; return }
+        wire.press(Int32(command.keyCode))
+    }
+    func sendKey(_ code: Int32) { wire.press(code) }
+    func typeText(_ text: String, submit: Bool) {
+        guard session != nil else { notice = "Канал пульта ещё не готов"; return }
+        let skipped = wire.type(text)
+        if submit { wire.press(KeyMap.enter) }
+        notice = skipped.isEmpty ? nil : "Не удалось набрать: \(String(skipped)) — используйте голос или поиск YouTube"
+    }
+    func youtubeSearch(_ text: String) {
+        guard let id = activeDeviceID, !text.isEmpty else { return }
+        _ = cast.sendDirective(deviceId: id, directive: LibSberCast.CastDirective(.showYouTubeSearchDirective(textToSearch: text)))
+    }
+    func toggleVoice() { voiceState == .idle ? startVoice() : cancelVoice() }
+    private func startVoice() {
+        guard let id = activeDeviceID, connectedDevice != nil else { notice = "Телевизор не подключён"; return }
+        MicStreamer.requestPermission { [weak self] granted in
+            guard let self else { return }
+            guard granted else { self.error = "Нет доступа к микрофону — разрешите в Настройках iOS"; return }
+            self.error = nil; self.notice = nil; self.voiceState = .starting
+            self.cast.voiceTransport.startVoiceInput(deviceId: id)
+        }
+    }
+    private func cancelVoice() {
+        if let id = activeDeviceID { cast.voiceTransport.cancelVoiceInput(deviceId: id) }
+        endVoice()
+    }
+    private func endVoice() { mic.stop(); voiceState = .idle }
+    private func beginStreaming(deviceId: String) {
+        let transport = cast.voiceTransport
+        do {
+            try mic.start { chunk in
+                transport.sendAudioData(deviceId: deviceId, audioType: .pcm16khz16bit, audioData: chunk)
+            }
+            voiceState = .listening
+        } catch {
+            self.error = "Микрофон: \(error.localizedDescription)"
+            cancelVoice()
+        }
+    }
+    private func handleVoice(deviceId: String, status: LibSberCast.VoiceTransportConversationStatus) {
+        switch status {
+        case .listening: if voiceState == .starting { beginStreaming(deviceId: deviceId) }
+        case .listeningComplete, .ended, .cancelled: endVoice()
+        case .error, .deviceNotConnected: error = "Голосовой ввод недоступен на этом ТВ"; endVoice()
+        case .notStarted, .unknown: break
+        }
+    }
+    nonisolated func onStartVoiceInputResponse(deviceId: String, status: LibSberCast.VoiceTransportConversationStatus) {
+        Task { @MainActor in self.handleVoice(deviceId: deviceId, status: status) }
+    }
+    nonisolated func onSendAudioDataResponse(deviceId: String, status: LibSberCast.VoiceTransportConversationStatus) {
+        Task { @MainActor in self.handleVoice(deviceId: deviceId, status: status) }
+    }
+    nonisolated func onCancelVoiceInputResponse(deviceId: String, status: LibSberCast.VoiceTransportConversationStatus) {
+        Task { @MainActor in self.endVoice() }
     }
 
     var hasSavedDevice: Bool {
@@ -62,6 +134,7 @@ final class SberCastRemote: NSObject, ObservableObject, LibSberCast.SberCastList
         if permissionBrowser == nil && connectedDevice == nil {
             startBonjourPermissionProbe()
         } else if connectedDevice != nil {
+            if let s = session { wire.prepare(session: s) }
             reconnectGamepadIfNeeded()
         } else {
             reconnectSavedDeviceIfPossible()
@@ -70,6 +143,7 @@ final class SberCastRemote: NSObject, ObservableObject, LibSberCast.SberCastList
 
     func pause() {
         paused = true
+        if voiceState != .idle { cancelVoice() }
         // Keep LibSberCast alive across background/foreground transitions.
         // Recreating it here causes Bonjour service errors on the next appearance.
         permissionBrowser?.cancel()
@@ -189,6 +263,7 @@ final class SberCastRemote: NSObject, ObservableObject, LibSberCast.SberCastList
         gamepadRequestInFlight = false
         UserDefaults.standard.removeObject(forKey: savedDeviceIDKey)
         UserDefaults.standard.removeObject(forKey: savedDeviceNameKey)
+        if voiceState != .idle { cancelVoice() }
         session = nil
         connectedDevice = nil
         activeDeviceID = nil

@@ -49,3 +49,25 @@ struct GamepadSession {
     let aesKey: String
     let ipv4: [String]
 }
+
+/// Android KeyEvent-коды для набора текста.
+enum KeyMap {
+    static let backspace: Int32 = 67
+    static let enter: Int32 = 66
+    static func code(for ch: Character) -> Int32? {
+        let s = String(ch).lowercased()
+        guard let u = s.unicodeScalars.first, s.unicodeScalars.count == 1 else { return nil }
+        switch u.value {
+        case 97...122: return Int32(u.value - 97 + 29)
+        case 48...57: return Int32(u.value - 48 + 7)
+        case 32: return 62
+        case 44: return 55
+        case 46: return 56
+        case 45: return 69
+        case 47: return 76
+        case 64: return 77
+        case 10: return enter
+        default: return nil
+        }
+    }
+}
