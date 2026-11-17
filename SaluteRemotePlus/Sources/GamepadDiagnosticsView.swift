@@ -8,6 +8,7 @@ struct DiagnosticCandidate: Identifiable {
     let id: Int
     let transport: NWParameters
     let transportName: String
+    let host: String
     let keyMode: String
     let ivMode: String
     let cipherMode: String
@@ -16,7 +17,7 @@ struct DiagnosticCandidate: Identifiable {
     let counterMode: Bool
 
     var title: String {
-        "\(transportName) · key:\(keyMode) · iv:\(ivMode) · AES-\(cipherMode) · \(framing ? "length-prefix" : "raw") · \(wrapped ? "protobuf wrapper" : "protobuf raw") · \(counterMode ? "counter" : "no counter")"
+        "\(transportName) @ \(host) · key:\(keyMode) · iv:\(ivMode) · AES-\(cipherMode) · \(framing ? "length-prefix" : "raw") · \(wrapped ? "protobuf wrapper" : "protobuf raw") · \(counterMode ? "counter" : "no counter")"
     }
 }
 
@@ -42,7 +43,7 @@ final class GamepadDiagnostics: ObservableObject {
 
     func startFullScan() {
         stop()
-        candidates = Self.makeCandidates()
+        candidates = Self.makeCandidates(hosts: session.ipv4)
         index = 0
         successDescription = nil
         lastError = nil
@@ -98,8 +99,7 @@ final class GamepadDiagnostics: ObservableObject {
         waitingForUser = false
         lastError = nil
         log("Проверка \(index + 1)/\(candidates.count): \(candidate.title)")
-        guard let host = session.ipv4.first,
-              session.port > 0, session.port <= UInt(UInt16.max),
+        guard session.port > 0, session.port <= UInt(UInt16.max),
               let port = NWEndpoint.Port(rawValue: UInt16(session.port)),
               let packets = makeTestPackets(candidate: candidate) else {
             lastError = "Не удалось подготовить адрес, порт, AES-ключ или IV"
@@ -108,7 +108,7 @@ final class GamepadDiagnostics: ObservableObject {
             return
         }
 
-        let conn = NWConnection(host: NWEndpoint.Host(host), port: port, using: candidate.transport)
+        let conn = NWConnection(host: NWEndpoint.Host(candidate.host), port: port, using: candidate.transport)
         connection = conn
         conn.stateUpdateHandler = { [weak self, weak conn] state in
             Task { @MainActor in
@@ -256,11 +256,12 @@ final class GamepadDiagnostics: ObservableObject {
         if logs.count > 250 { logs.removeFirst(logs.count - 250) }
     }
 
-    private static func makeCandidates() -> [DiagnosticCandidate] {
+    private static func makeCandidates(hosts: [String]) -> [DiagnosticCandidate] {
         var result: [DiagnosticCandidate] = []
         var id = 0
         let transports: [(NWParameters, String)] = [(.tcp, "TCP"), (.udp, "UDP")]
-        for (transport, transportName) in transports {
+        for host in hosts {
+          for (transport, transportName) in transports {
             for key in ["base64", "hex", "utf8", "sha256"] {
                 for iv in ["uuidBytes", "uuidUTF8", "uuidHex", "zero", "sha256"] {
                     for cipher in ["CBC", "ECB"] {
@@ -268,7 +269,7 @@ final class GamepadDiagnostics: ObservableObject {
                             for wrapped in [true, false] {
                                 for counter in [true, false] {
                                     result.append(DiagnosticCandidate(id: id, transport: transport,
-                                        transportName: transportName, keyMode: key, ivMode: iv,
+                                        transportName: transportName, host: host, keyMode: key, ivMode: iv,
                                         cipherMode: cipher, framing: framing,
                                         wrapped: wrapped, counterMode: counter))
                                     id += 1
@@ -278,6 +279,8 @@ final class GamepadDiagnostics: ObservableObject {
                     }
                 }
             }
+        }
+          }
         }
         return result
     }
@@ -305,7 +308,7 @@ struct GamepadDiagnosticsView: View {
                         infoRow("Версия сервиса", session.serviceVersion)
                         infoRow("Session ID", session.sessionId)
                         infoRow("Длина ключа", "\(session.aesKey.utf8.count) символов")
-                        infoRow("Состояние TCP", diagnostics.connected ? "Подключено" : "Не подключено")
+                        infoRow("Состояние транспорта", diagnostics.connected ? "Подключено" : "Не подключено")
                     }
                     .padding(14).background(.white.opacity(0.06), in: RoundedRectangle(cornerRadius: 16))
 
