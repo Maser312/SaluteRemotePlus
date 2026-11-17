@@ -105,6 +105,7 @@ final class GamepadDiagnostics: ObservableObject {
             lastError = "Не удалось подготовить адрес, порт, AES-ключ или IV"
             log("ОШИБКА: \(lastError!)")
             waitingForUser = true
+            scheduleAutoAdvance(generation: gen)
             return
         }
 
@@ -121,6 +122,7 @@ final class GamepadDiagnostics: ObservableObject {
                     self.lastError = error.localizedDescription
                     self.log("Соединение не удалось: \(error.localizedDescription)")
                     self.waitingForUser = true
+                    self.scheduleAutoAdvance(generation: gen)
                 case .cancelled:
                     break
                 default:
@@ -186,6 +188,7 @@ final class GamepadDiagnostics: ObservableObject {
                         self.lastError = error.localizedDescription
                         self.log("Ошибка отправки: \(error.localizedDescription)")
                         self.waitingForUser = true
+                        self.scheduleAutoAdvance(generation: generation)
                     }
                 } else {
                     send(index + 1)
