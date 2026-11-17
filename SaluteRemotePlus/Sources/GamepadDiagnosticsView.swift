@@ -14,7 +14,7 @@ struct DiagnosticCandidate: Identifiable {
     let cipherMode: String
     let framing: Bool
     let wrapped: Bool
-    let counterMode: Bool
+    let counterMode: String
 
     var title: String {
         "\(transportName) @ \(host) · key:\(keyMode) · iv:\(ivMode) · AES-\(cipherMode) · \(framing ? "length-prefix" : "raw") · \(wrapped ? "protobuf wrapper" : "protobuf raw") · \(counterMode ? "counter" : "no counter")"
@@ -131,12 +131,20 @@ final class GamepadDiagnostics: ObservableObject {
         conn.start(queue: .global(qos: .userInitiated))
     }
 
+    private func scheduleAutoAdvance(generation: Int) {
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 3_000_000_000)
+            guard generation == self.generation, self.running, self.waitingForUser else { return }
+            self.skipCurrent()
+        }
+    }
+
     private func makeTestPackets(candidate: DiagnosticCandidate) -> [Data]? {
         guard let key = decodeKey(session.aesKey, mode: candidate.keyMode),
               let iv = decodeIV(session.sessionId, mode: candidate.ivMode) else { return nil }
         func makePacket(code: UInt8, pressed: Bool, order: UInt32) -> Data? {
             var body = Data()
-            if candidate.counterMode { body.append(contentsOf: be32(order)) }
+            if candidate.counterMode == "inside" { body.append(contentsOf: be32(order)) }
             let button = Data([0x08, code, 0x10, pressed ? 0x01 : 0x00])
             if candidate.wrapped {
                 body.append(contentsOf: [0x0A, UInt8(button.count)])
@@ -145,9 +153,13 @@ final class GamepadDiagnostics: ObservableObject {
                 body.append(button)
             }
             guard let encrypted = crypt(body, key: key, iv: iv, cipherMode: candidate.cipherMode) else { return nil }
+            var payload = Data()
+            if candidate.counterMode == "outsidePair" { payload.append(contentsOf: be32(2)) }
+            if candidate.counterMode == "outsideIncrementing" { payload.append(contentsOf: be32(order)) }
+            payload.append(encrypted)
             var packet = Data()
-            if candidate.framing { packet.append(contentsOf: be32(UInt32(encrypted.count))) }
-            packet.append(encrypted)
+            if candidate.framing { packet.append(contentsOf: be32(UInt32(payload.count))) }
+            packet.append(payload)
             return packet
         }
         guard let down = makePacket(code: 0x16, pressed: true, order: 1),
@@ -163,6 +175,7 @@ final class GamepadDiagnostics: ObservableObject {
                     guard generation == self.generation else { return }
                     self.waitingForUser = true
                     self.log("Пакеты переданы сетевому стеку. Это НЕ подтверждение обработки телевизором.")
+                    self.scheduleAutoAdvance(generation: generation)
                 }
                 return
             }
@@ -267,7 +280,7 @@ final class GamepadDiagnostics: ObservableObject {
                     for cipher in ["CBC", "ECB"] {
                         for framing in [true, false] {
                             for wrapped in [true, false] {
-                                for counter in [true, false] {
+                                for counter in ["none", "inside", "outsidePair", "outsideIncrementing"] {
                                     result.append(DiagnosticCandidate(id: id, transport: transport,
                                         transportName: transportName, host: host, keyMode: key, ivMode: iv,
                                         cipherMode: cipher, framing: framing,
@@ -314,9 +327,9 @@ struct GamepadDiagnosticsView: View {
 
                     VStack(alignment: .leading, spacing: 10) {
                         Text("Автопоиск протокола").font(.headline)
-                        Text("Перебираются TCP/UDP, варианты AES-ключа и IV, упаковка protobuf и framing. Для каждого варианта отправляется одно короткое нажатие RIGHT и сразу отпускание.")
+                        Text("Перебираются TCP/UDP, варианты AES-ключа и IV, упаковка protobuf и framing. Для каждого варианта отправляется короткое нажатие RIGHT и сразу отпускание. Через 3 секунды без подтверждения автоматически проверяется следующий вариант.")
                             .font(.caption).foregroundStyle(.white.opacity(0.65))
-                        Text("Важно: iOS может подтвердить только передачу пакета в сеть. Ответ телевизора о выполнении команды не предусмотрен в известном протоколе, поэтому реакцию нужно подтвердить глазами.")
+                        Text("Важно: iOS может подтвердить только передачу пакета в сеть. Ответ телевизора о выполнении команды не предусмотрен в известном протоколе. Если заметишь реакцию, нажми «Сработало!» до перехода к следующему варианту.")
                             .font(.caption).foregroundStyle(.orange)
                         HStack {
                             Text(diagnostics.progressText).font(.system(.subheadline, design: .monospaced))
