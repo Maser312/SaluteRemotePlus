@@ -17,7 +17,7 @@ struct DiagnosticCandidate: Identifiable {
     let counterMode: String
 
     var title: String {
-        "\(transportName) @ \(host) · key:\(keyMode) · iv:\(ivMode) · AES-\(cipherMode) · \(framing ? "length-prefix" : "raw") · \(wrapped ? "protobuf wrapper" : "protobuf raw") · \(counterMode ? "counter" : "no counter")"
+        "\(transportName) @ \(host) · key:\(keyMode) · iv:\(ivMode) · AES-\(cipherMode) · \(framing ? "length-prefix" : "raw") · \(wrapped ? "protobuf wrapper" : "protobuf raw") · \(counterMode) counter"
     }
 }
 
