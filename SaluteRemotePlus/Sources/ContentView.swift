@@ -9,7 +9,7 @@ struct ContentView: View {
     var body: some View {
         ZStack {
             LinearGradient(colors: [.black, Color(red: 0.08, green: 0.04, blue: 0.13), .black], startPoint: .topLeading, endPoint: .bottomTrailing).ignoresSafeArea()
-            if remote.connectedDevice != nil { RemotePadView(remote: remote) } else { ConnectionView(remote: remote) }
+            if remote.connectedDevice != nil { RemotePadView(remote: remote, showDiagnostics: $showDiagnostics) } else { ConnectionView(remote: remote) }
         }
         .preferredColorScheme(.dark)
         .onAppear { remote.resume() }
@@ -21,23 +21,6 @@ struct ContentView: View {
                 remote.pause()
             default:
                 break
-            }
-        }
-        .overlay(alignment: .topTrailing) {
-            if remote.connectedDevice != nil {
-                Button {
-                    showDiagnostics = true
-                } label: {
-                    Image(systemName: "waveform.path.ecg")
-                        .font(.system(size: 17, weight: .semibold))
-                        .foregroundStyle(.white)
-                        .frame(width: 44, height: 44)
-                        .background(.ultraThinMaterial, in: Circle())
-                        .overlay(Circle().stroke(.white.opacity(0.16), lineWidth: 1))
-                }
-                .accessibilityLabel("Диагностика пульта")
-                .padding(.trailing, 16)
-                .padding(.top, 8)
             }
         }
         .sheet(isPresented: $showDiagnostics) {
@@ -103,6 +86,7 @@ struct StatusCard: View {
 
 struct RemotePadView: View {
     @ObservedObject var remote: SberCastRemote
+    @Binding var showDiagnostics: Bool
     @State private var showKeyboard = false
     var body: some View {
         GeometryReader { proxy in
@@ -114,6 +98,13 @@ struct RemotePadView: View {
                             HStack(spacing: 6) { Circle().fill(.green).frame(width: 7, height: 7); Text("Подключено").font(.caption.weight(.medium)).foregroundStyle(.green) }
                         }
                         Spacer()
+                        Button { showDiagnostics = true; Haptics.tap() } label: {
+                            Image(systemName: "waveform.path.ecg")
+                                .font(.title3)
+                                .frame(width: 46, height: 46)
+                                .background(.white.opacity(0.08), in: Circle())
+                        }
+                        .accessibilityLabel("Диагностика пульта")
                         Button { remote.forgetSavedDevice(); Haptics.tap() } label: { Image(systemName: "link.badge.plus").font(.title3).frame(width: 46, height: 46).background(.white.opacity(0.08), in: Circle()) }
                     }
                     RemoteTopBar(send: send)
