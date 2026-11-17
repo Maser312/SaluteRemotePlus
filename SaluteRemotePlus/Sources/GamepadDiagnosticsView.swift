@@ -2,6 +2,7 @@ import SwiftUI
 import Network
 import CommonCrypto
 import CryptoKit
+import UIKit
 
 private struct DiagnosticCandidate: Identifiable {
     let id: Int
@@ -9,14 +10,13 @@ private struct DiagnosticCandidate: Identifiable {
     let transportName: String
     let keyMode: String
     let ivMode: String
-    let cipherMode: CCOperation
-    let cipherName: String
+    let cipherMode: String
     let framing: Bool
     let wrapped: Bool
     let counterMode: Bool
 
     var title: String {
-        "\(transportName) · key:\(keyMode) · iv:\(ivMode) · AES-\(cipherName) · \(framing ? "length-prefix" : "raw") · \(wrapped ? "protobuf wrapper" : "protobuf raw") · \(counterMode ? "counter" : "no counter")"
+        "\(transportName) · key:\(keyMode) · iv:\(ivMode) · AES-\(cipherMode) · \(framing ? "length-prefix" : "raw") · \(wrapped ? "protobuf wrapper" : "protobuf raw") · \(counterMode ? "counter" : "no counter")"
     }
 }
 
@@ -101,7 +101,7 @@ final class GamepadDiagnostics: ObservableObject {
         guard let host = session.ipv4.first,
               session.port > 0, session.port <= UInt(UInt16.max),
               let port = NWEndpoint.Port(rawValue: UInt16(session.port)),
-              let packet = makeTestPacket(candidate: candidate) else {
+              let packets = makeTestPackets(candidate: candidate) else {
             lastError = "Не удалось подготовить адрес, порт, AES-ключ или IV"
             log("ОШИБКА: \(lastError!)")
             waitingForUser = true
@@ -116,19 +116,7 @@ final class GamepadDiagnostics: ObservableObject {
                 switch state {
                 case .ready:
                     self.connected = true
-                    conn?.send(content: packet, completion: .contentProcessed { error in
-                        Task { @MainActor in
-                            guard let self, gen == self.generation else { return }
-                            if let error {
-                                self.lastError = error.localizedDescription
-                                self.log("Ошибка отправки: \(error.localizedDescription)")
-                                self.waitingForUser = true
-                            } else {
-                                self.waitingForUser = true
-                                self.log("Пакет передан сетевому стеку. Это НЕ подтверждение обработки телевизором.")
-                            }
-                        }
-                    })
+                    self.sendPackets(packets, through: conn, generation: gen)
                 case .failed(let error):
                     self.lastError = error.localizedDescription
                     self.log("Соединение не удалось: \(error.localizedDescription)")
@@ -143,46 +131,55 @@ final class GamepadDiagnostics: ObservableObject {
         conn.start(queue: .global(qos: .userInitiated))
     }
 
-    private func makeTestPacket(candidate: DiagnosticCandidate) -> Data? {
+    private func makeTestPackets(candidate: DiagnosticCandidate) -> [Data]? {
         guard let key = decodeKey(session.aesKey, mode: candidate.keyMode),
               let iv = decodeIV(session.sessionId, mode: candidate.ivMode) else { return nil }
-        var body = Data()
-        if candidate.counterMode { body.append(contentsOf: [0, 0, 0, 1]) }
-        let button = Data([0x08, 0x16, 0x10, 0x01]) // KEYCODE_DPAD_RIGHT, pressed
-        if candidate.wrapped {
-            body.append(contentsOf: [0x0A, UInt8(button.count)])
-            body.append(button)
-        } else {
-            body.append(button)
+        func makePacket(code: UInt8, pressed: Bool, order: UInt32) -> Data? {
+            var body = Data()
+            if candidate.counterMode { body.append(contentsOf: be32(order)) }
+            let button = Data([0x08, code, 0x10, pressed ? 0x01 : 0x00])
+            if candidate.wrapped {
+                body.append(contentsOf: [0x0A, UInt8(button.count)])
+                body.append(button)
+            } else {
+                body.append(button)
+            }
+            guard let encrypted = crypt(body, key: key, iv: iv, cipherMode: candidate.cipherMode) else { return nil }
+            var packet = Data()
+            if candidate.framing { packet.append(contentsOf: be32(UInt32(encrypted.count))) }
+            packet.append(encrypted)
+            return packet
         }
-        guard let encrypted = crypt(body, key: key, iv: iv, operation: candidate.cipherMode) else { return nil }
-        var packet = Data()
-        if candidate.framing {
-            let length = UInt32(encrypted.count + (candidate.counterMode ? 4 : 0))
-            packet.append(contentsOf: be32(length))
-        }
-        if candidate.counterMode { packet.append(contentsOf: [0, 0, 0, 1]) }
-        packet.append(encrypted)
+        guard let down = makePacket(code: 0x16, pressed: true, order: 1),
+              let up = makePacket(code: 0x16, pressed: false, order: 2) else { return nil }
+        return [down, up]
+    }
 
-        // Release packet follows the press packet. TCP receives a stream; UDP receives
-        // one datagram containing the pair so we never flood the TV with long presses.
-        var releaseBody = Data()
-        if candidate.counterMode { releaseBody.append(contentsOf: [0, 0, 0, 2]) }
-        let releaseButton = Data([0x08, 0x16, 0x10, 0x00])
-        if candidate.wrapped {
-            releaseBody.append(contentsOf: [0x0A, UInt8(releaseButton.count)])
-            releaseBody.append(releaseButton)
-        } else {
-            releaseBody.append(releaseButton)
+    private func sendPackets(_ packets: [Data], through connection: NWConnection?, generation: Int) {
+        guard let connection, !packets.isEmpty else { return }
+        func send(_ index: Int) {
+            guard index < packets.count else {
+                Task { @MainActor in
+                    guard generation == self.generation else { return }
+                    self.waitingForUser = true
+                    self.log("Пакеты переданы сетевому стеку. Это НЕ подтверждение обработки телевизором.")
+                }
+                return
+            }
+            connection.send(content: packets[index], completion: .contentProcessed { error in
+                if let error {
+                    Task { @MainActor in
+                        guard generation == self.generation else { return }
+                        self.lastError = error.localizedDescription
+                        self.log("Ошибка отправки: \(error.localizedDescription)")
+                        self.waitingForUser = true
+                    }
+                } else {
+                    send(index + 1)
+                }
+            })
         }
-        guard let releaseEncrypted = crypt(releaseBody, key: key, iv: iv, operation: candidate.cipherMode) else { return nil }
-        var releasePacket = Data()
-        if candidate.framing {
-            releasePacket.append(contentsOf: be32(UInt32(releaseEncrypted.count)))
-        }
-        releasePacket.append(releaseEncrypted)
-        packet.append(releasePacket)
-        return packet
+        send(0)
     }
 
     private func decodeKey(_ raw: String, mode: String) -> Data? {
@@ -227,16 +224,16 @@ final class GamepadDiagnostics: ObservableObject {
         }
     }
 
-    private func crypt(_ input: Data, key: Data, iv: Data, operation: CCOperation) -> Data? {
+    private func crypt(_ input: Data, key: Data, iv: Data, cipherMode: String) -> Data? {
         guard [16, 24, 32].contains(key.count), iv.count == 16 else { return nil }
         var output = Data(count: input.count + 32)
         var moved = 0
-        let options = CCOptions(kCCOptionPKCS7Padding | (operation == CCOperation(kCCEncrypt) ? 0 : 0))
+        let options = CCOptions(kCCOptionPKCS7Padding | (cipherMode == "ECB" ? kCCOptionECBMode : 0))
         let status = output.withUnsafeMutableBytes { out in
             input.withUnsafeBytes { data in
                 key.withUnsafeBytes { k in
                     iv.withUnsafeBytes { v in
-                        CCCrypt(operation, CCAlgorithm(kCCAlgorithmAES), options,
+                        CCCrypt(CCOperation(kCCEncrypt), CCAlgorithm(kCCAlgorithmAES), options,
                                 k.baseAddress, key.count, v.baseAddress,
                                 data.baseAddress, input.count, out.baseAddress,
                                 output.count, &moved)
@@ -266,13 +263,13 @@ final class GamepadDiagnostics: ObservableObject {
         for (transport, transportName) in transports {
             for key in ["base64", "hex", "utf8", "sha256"] {
                 for iv in ["uuidBytes", "uuidUTF8", "uuidHex", "zero", "sha256"] {
-                    for cipher in [CCOperation(kCCEncrypt), CCOperation(kCCEncrypt)] {
+                    for cipher in ["CBC", "ECB"] {
                         for framing in [true, false] {
                             for wrapped in [true, false] {
                                 for counter in [true, false] {
                                     result.append(DiagnosticCandidate(id: id, transport: transport,
                                         transportName: transportName, keyMode: key, ivMode: iv,
-                                        cipherMode: cipher, cipherName: "CBC", framing: framing,
+                                        cipherMode: cipher, framing: framing,
                                         wrapped: wrapped, counterMode: counter))
                                     id += 1
                                 }
