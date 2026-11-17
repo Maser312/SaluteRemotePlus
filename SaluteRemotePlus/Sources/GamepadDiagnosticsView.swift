@@ -4,7 +4,7 @@ import CommonCrypto
 import CryptoKit
 import UIKit
 
-private struct DiagnosticCandidate: Identifiable {
+struct DiagnosticCandidate: Identifiable {
     let id: Int
     let transport: NWParameters
     let transportName: String
