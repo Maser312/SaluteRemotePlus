@@ -3,6 +3,7 @@ import UIKit
 
 struct ContentView: View {
     @StateObject private var remote = SberCastRemote()
+    @State private var showDiagnostics = false
     @Environment(\.scenePhase) private var scenePhase
 
     var body: some View {
@@ -20,6 +21,30 @@ struct ContentView: View {
                 remote.pause()
             default:
                 break
+            }
+        }
+        .overlay(alignment: .topTrailing) {
+            if remote.connectedDevice != nil {
+                Button {
+                    showDiagnostics = true
+                } label: {
+                    Image(systemName: "waveform.path.ecg")
+                        .font(.system(size: 17, weight: .semibold))
+                        .foregroundStyle(.white)
+                        .frame(width: 44, height: 44)
+                        .background(.ultraThinMaterial, in: Circle())
+                        .overlay(Circle().stroke(.white.opacity(0.16), lineWidth: 1))
+                }
+                .accessibilityLabel("Диагностика пульта")
+                .padding(.trailing, 16)
+                .padding(.top, 8)
+            }
+        }
+        .sheet(isPresented: $showDiagnostics) {
+            if let session = remote.session {
+                GamepadDiagnosticsView(session: session)
+            } else {
+                Text("Сессия пульта недоступна").preferredColorScheme(.dark)
             }
         }
     }
